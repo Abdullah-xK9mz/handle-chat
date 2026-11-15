@@ -20,7 +20,7 @@ const MEDIA_EXTENSIONS: Record<string, string> = {
   'audio/webm': 'webm',
   'audio/ogg': 'ogg',
   'audio/mp4': 'mp4',
-  'audio/mpeg': 'mp3',
+  'audio/mpeg': 'mpeg',
   'audio/wav': 'wav',
   'application/pdf': 'pdf',
   'text/plain': 'txt',
