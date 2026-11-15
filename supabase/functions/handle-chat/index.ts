@@ -77,6 +77,14 @@ async function rpc(name: string, args: Record<string, unknown>) {
       "INVALID_IMAGE",
       "NAME_REQUIRED",
       "NAME_TOO_LONG",
+      "USER_BLOCKED",
+      "INVALID_GROUP_NAME",
+      "INVALID_GROUP_MEMBERS",
+      "INVALID_MESSAGE_TYPE",
+      "INVALID_MESSAGE",
+      "INVALID_POLL",
+      "EMPTY_STATUS",
+      "STATUS_TOO_LONG",
       "NOT_FOUND",
     ].find((code) => searchable.includes(code));
     if (known) {
@@ -132,6 +140,12 @@ async function createSignedMediaUrl(path: string) {
       ? `${SUPABASE_URL}${signed}`
       : `${SUPABASE_URL}/storage/v1${signed.startsWith("/") ? signed : `/${signed}`}`;
   return { url, expiresAt: Math.floor(Date.now() / 1000) + 3600 };
+}
+
+function validMessageId(value: unknown) {
+  const id = Number(value);
+  if (!Number.isSafeInteger(id) || id <= 0) throw new ChatError("NOT_FOUND", 404);
+  return id;
 }
 
 async function signUp(body: Record<string, unknown>) {
@@ -320,13 +334,19 @@ async function handle(request: Request) {
         return json({ message });
       }
       case "get-media-url": {
-        const conversationId = validConversationId(body.conversationId);
         const mediaPath = typeof body.mediaPath === "string" ? body.mediaPath : "";
-        const allowed = await rpc("chat_can_access_media", {
-          p_conversation_id: conversationId,
-          p_user_id: user.id,
-          p_media_path: mediaPath,
-        });
+        const isStatus = body.scope === "status";
+        const allowed = isStatus
+          ? await rpc("chat_can_access_status_media", {
+              p_status_id: body.statusId,
+              p_user_id: user.id,
+              p_media_path: mediaPath,
+            })
+          : await rpc("chat_can_access_media", {
+              p_conversation_id: validConversationId(body.conversationId),
+              p_user_id: user.id,
+              p_media_path: mediaPath,
+            });
         if (!allowed) throw new ChatError("NOT_FOUND", 404);
         return json(await createSignedMediaUrl(mediaPath));
       }
@@ -347,6 +367,107 @@ async function handle(request: Request) {
           p_update_image: updateImage,
         });
         return json(profile);
+      }
+      case "create-group": {
+        const name = typeof body.name === "string" ? body.name.trim() : "";
+        const usernames = Array.isArray(body.usernames)
+          ? body.usernames
+              .filter((value): value is string => typeof value === "string")
+              .map((value) => value.trim().replace(/^@/, "").toLowerCase())
+          : [];
+        if (usernames.some((value) => !USERNAME_PATTERN.test(value))) {
+          throw new ChatError("INVALID_USERNAME", 400);
+        }
+        const id = await rpc("chat_create_group", {
+          p_user_id: user.id,
+          p_name: name,
+          p_usernames: usernames,
+        });
+        return json({ id });
+      }
+      case "search-messages": {
+        const conversationId = validConversationId(body.conversationId);
+        const query = typeof body.query === "string" ? body.query.trim().slice(0, 100) : "";
+        if (!query) return json({ messages: [] });
+        const messages = await rpc("chat_search_messages", {
+          p_conversation_id: conversationId,
+          p_user_id: user.id,
+          p_query: query,
+        });
+        return json({ messages });
+      }
+      case "send-structured-message": {
+        const conversationId = validConversationId(body.conversationId);
+        const messageType = typeof body.messageType === "string" ? body.messageType : "";
+        const payload = body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)
+          ? body.payload
+          : {};
+        const message = await rpc("chat_send_structured_message", {
+          p_conversation_id: conversationId,
+          p_user_id: user.id,
+          p_message_type: messageType,
+          p_body: typeof body.body === "string" ? body.body : "",
+          p_payload: payload,
+        });
+        return json({ message });
+      }
+      case "vote-poll": {
+        const messageId = validMessageId(body.messageId);
+        const optionIndex = Number(body.optionIndex);
+        if (!Number.isSafeInteger(optionIndex) || optionIndex < 0) {
+          throw new ChatError("INVALID_POLL", 400);
+        }
+        await rpc("chat_vote_poll", {
+          p_message_id: messageId,
+          p_user_id: user.id,
+          p_option_index: optionIndex,
+        });
+        return json({ ok: true });
+      }
+      case "block-user": {
+        if (typeof body.userId !== "string") throw new ChatError("USER_NOT_FOUND", 404);
+        await rpc("chat_block_user", { p_user_id: user.id, p_blocked_id: body.userId });
+        return json({ ok: true });
+      }
+      case "unblock-user": {
+        if (typeof body.userId !== "string") throw new ChatError("USER_NOT_FOUND", 404);
+        await rpc("chat_unblock_user", { p_user_id: user.id, p_blocked_id: body.userId });
+        return json({ ok: true });
+      }
+      case "get-blocked-users": {
+        const users = await rpc("chat_list_blocked", { p_user_id: user.id });
+        return json({ users });
+      }
+      case "set-muted": {
+        const conversationId = validConversationId(body.conversationId);
+        await rpc("chat_set_muted", {
+          p_user_id: user.id,
+          p_conversation_id: conversationId,
+          p_muted: body.muted === true,
+        });
+        return json({ ok: true });
+      }
+      case "list-statuses": {
+        const statuses = await rpc("chat_list_statuses", { p_user_id: user.id });
+        return json({ statuses });
+      }
+      case "create-status": {
+        const status = await rpc("chat_create_status", {
+          p_user_id: user.id,
+          p_body: typeof body.body === "string" ? body.body : "",
+          p_media_path: typeof body.mediaPath === "string" ? body.mediaPath : null,
+          p_media_type: typeof body.mediaType === "string" ? body.mediaType : null,
+          p_media_name: typeof body.mediaName === "string" ? body.mediaName : null,
+        });
+        return json({ status });
+      }
+      case "delete-status": {
+        if (typeof body.statusId !== "string") throw new ChatError("NOT_FOUND", 404);
+        const deleted = await rpc("chat_delete_status", {
+          p_user_id: user.id,
+          p_status_id: body.statusId,
+        });
+        return json({ deleted });
       }
       default:
         throw new ChatError("NOT_FOUND", 404);

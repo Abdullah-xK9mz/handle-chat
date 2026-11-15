@@ -17,6 +17,20 @@ const MEDIA_EXTENSIONS: Record<string, string> = {
   'video/mp4': 'mp4',
   'video/webm': 'webm',
   'video/quicktime': 'mov',
+  'audio/webm': 'webm',
+  'audio/ogg': 'ogg',
+  'audio/mp4': 'mp4',
+  'audio/mpeg': 'mp3',
+  'audio/wav': 'wav',
+  'application/pdf': 'pdf',
+  'text/plain': 'txt',
+  'text/csv': 'csv',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.ms-powerpoint': 'ppt',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
 }
 
 export type Profile = {
@@ -373,6 +387,18 @@ export async function uploadAvatar(file: File, userId: string) {
   return path
 }
 
+export async function uploadStatusMedia(file: File, userId: string) {
+  if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'video/webm', 'video/quicktime'].includes(file.type)) {
+    throw new SupabaseError('INVALID_MEDIA', 400)
+  }
+  if (file.size > MAX_MEDIA_SIZE) throw new SupabaseError('MEDIA_TOO_LARGE', 413)
+  const session = await getSession()
+  if (!session || session.user.id !== userId) throw new SupabaseError('UNAUTHORIZED', 401)
+  const path = `status/${userId}/${crypto.randomUUID()}.${MEDIA_EXTENSIONS[file.type]}`
+  await uploadTusFile(file, path, session)
+  return path
+}
+
 export async function chatRequest<T>(
   path: string,
   init?: RequestInit,
@@ -382,7 +408,9 @@ export async function chatRequest<T>(
   const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
   let payload: Record<string, unknown>
 
-  if (requestUrl.pathname === '/api/conversations') {
+  if (requestUrl.pathname === '/api/statuses') {
+    payload = { action: 'list-statuses' }
+  } else if (requestUrl.pathname === '/api/conversations') {
     payload =
       method === 'POST'
         ? { action: 'start-conversation', username: body.username }

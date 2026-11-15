@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import useSWR from 'swr'
 import { MessageCircle } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
@@ -22,6 +22,52 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
 
   const conversations = data?.conversations ?? []
   const active = conversations.find((c) => c.id === activeId) ?? null
+  const seenMessagesRef = useRef<Map<number, string> | null>(null)
+
+  useEffect(() => {
+    if (!data) return
+    const previous = seenMessagesRef.current
+    const current = new Map(conversations.map((conversation) => [conversation.id, conversation.lastMessageAt]))
+    if (previous && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      const enabled = localStorage.getItem('handle.notifications.enabled.v1') === 'true'
+      if (enabled && document.visibilityState === 'hidden') {
+        for (const conversation of conversations) {
+          const before = previous.get(conversation.id)
+          if (
+            conversation.lastSenderId &&
+            conversation.lastSenderId !== currentUser.id &&
+            !conversation.isMuted &&
+            conversation.lastMessageAt !== before
+          ) {
+            const body = conversation.lastBody || (conversation.lastMessageType === 'voice'
+              ? t.chat.recordVoice
+              : conversation.lastMessageType === 'document'
+                ? t.chat.document
+                : conversation.lastMessageType === 'poll'
+                  ? t.chat.poll
+                  : conversation.lastMessageType === 'event'
+                    ? t.chat.event
+                    : conversation.lastMediaType?.startsWith('video/')
+                      ? t.chat.videoMessage
+                      : conversation.lastMediaType?.startsWith('image/')
+                        ? t.chat.photoMessage
+                        : t.chat.contact)
+            const notification = new Notification(conversation.isGroup ? conversation.groupName ?? conversation.otherName : conversation.otherName, {
+              body,
+              icon: conversation.isGroup ? undefined : conversation.otherImage ?? undefined,
+              tag: `handle-conversation-${conversation.id}`,
+            })
+            notification.onclick = () => {
+              window.focus()
+              setActiveId(conversation.id)
+              notification.close()
+            }
+          }
+        }
+      }
+    }
+    seenMessagesRef.current = current
+  }, [conversations, currentUser.id, data, t.chat])
 
   function openConversation(id: number) {
     setActiveId(id)
@@ -29,8 +75,8 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   }
 
   return (
-    <div className="min-h-dvh bg-canvas p-2 sm:p-4 lg:p-6">
-      <div className="mx-auto flex h-[calc(100dvh-1rem)] max-w-[1440px] overflow-hidden rounded-xl border bg-background shadow-xl sm:h-[calc(100dvh-2rem)] sm:rounded-2xl lg:h-[calc(100dvh-3rem)]">
+    <div className="h-dvh w-screen overflow-hidden bg-background">
+      <div className="mx-auto flex h-dvh w-full max-w-none overflow-hidden bg-background">
         <aside
           className={cn(
             'w-full flex-col border-e md:flex md:w-80 lg:w-96',
@@ -49,7 +95,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
 
         <main
           className={cn(
-            'min-w-0 flex-1 flex-col bg-canvas md:flex',
+            'min-h-0 min-w-0 flex-1 flex-col bg-canvas md:flex',
             activeId ? 'flex' : 'hidden',
           )}
         >
@@ -58,6 +104,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
               key={activeId}
               conversationId={activeId}
               currentUserId={currentUser.id}
+              otherUserId={active?.otherUserId}
               fallbackName={active?.otherName}
               fallbackUsername={active?.otherUsername ?? undefined}
               fallbackImage={active?.otherImage ?? undefined}
@@ -82,3 +129,4 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
     </div>
   )
 }
+

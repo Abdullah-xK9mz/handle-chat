@@ -5,9 +5,10 @@ import useSWR from 'swr'
 import { Search } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
 import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
 import { errorMessage } from '@/lib/i18n/dictionaries'
 import { normalizeUsername } from '@/lib/username'
-import { chatRequest } from '@/lib/supabase'
+import { chatRequest, edgeRequest } from '@/lib/supabase'
 import { fetcher } from './types'
 import { UserAvatar } from './user-avatar'
 
@@ -18,6 +19,10 @@ export function NewChat({ onStarted }: { onStarted: (id: number) => void }) {
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState<string | null>(null)
+  const [groupMode, setGroupMode] = useState(false)
+  const [groupName, setGroupName] = useState('')
+  const [selectedUsers, setSelectedUsers] = useState<FoundUser[]>([])
+  const [creatingGroup, setCreatingGroup] = useState(false)
   const deferred = normalizeUsername(useDeferredValue(query))
 
   const { data } = useSWR<{ users: FoundUser[] }>(
@@ -54,14 +59,95 @@ export function NewChat({ onStarted }: { onStarted: (id: number) => void }) {
     }
   }
 
+  async function createGroup() {
+    if (creatingGroup) return
+    if (!selectedUsers.length) {
+      setError(t.errors.INVALID_GROUP_MEMBERS)
+      return
+    }
+    setError(null)
+    setCreatingGroup(true)
+    try {
+      const result = await edgeRequest<{ id: number }>({
+        action: 'create-group',
+        name: groupName,
+        usernames: selectedUsers.map((user) => user.username),
+      })
+      setGroupName('')
+      setSelectedUsers([])
+      setQuery('')
+      setGroupMode(false)
+      onStarted(result.id)
+    } catch (caught) {
+      const code = typeof caught === 'object' && caught && 'code' in caught ? caught.code : 'GENERIC'
+      setError(errorMessage(t, code))
+    } finally {
+      setCreatingGroup(false)
+    }
+  }
+
+  function toggleSelected(user: FoundUser) {
+    setSelectedUsers((current) => current.some((item) => item.username === user.username)
+      ? current.filter((item) => item.username !== user.username)
+      : current.length < 49 ? [...current, user] : current)
+  }
+
   return (
     <div className="relative border-b px-4 py-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-muted-foreground">
+          {groupMode ? t.chat.groupMembers : t.chat.searchLabel}
+        </span>
+        <button
+          type="button"
+          className="text-xs font-medium text-primary hover:underline"
+          onClick={() => {
+            setGroupMode((value) => !value)
+            setError(null)
+          }}
+        >
+          {groupMode ? t.chat.conversations : t.chat.newGroup}
+        </button>
+      </div>
+      {groupMode && (
+        <div className="mb-2 space-y-2">
+          <Input
+            value={groupName}
+            maxLength={50}
+            onChange={(event) => setGroupName(event.target.value)}
+            placeholder={t.chat.groupNamePlaceholder}
+            aria-label={t.chat.groupName}
+            className="h-9 rounded-xl bg-background"
+          />
+          {selectedUsers.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {selectedUsers.map((user) => (
+                <button
+                  key={user.username}
+                  type="button"
+                  className="rounded-full bg-secondary px-2.5 py-1 text-xs"
+                  onClick={() => toggleSelected(user)}
+                  aria-label={`${user.name} @${user.username}`}
+                >
+                  @{user.username} ×
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <form
         role="search"
         onSubmit={(e) => {
           e.preventDefault()
           const username = normalizeUsername(query)
-          if (username) start(username)
+            if (!username) return
+            if (groupMode) {
+              const match = results.find((user) => user.username === username)
+              if (match) toggleSelected(match)
+            } else {
+              start(username)
+            }
         }}
       >
         <label htmlFor="new-chat" className="sr-only">
@@ -79,7 +165,7 @@ export function NewChat({ onStarted }: { onStarted: (id: number) => void }) {
               setQuery(e.target.value)
               setError(null)
             }}
-            placeholder={t.chat.searchPlaceholder}
+        placeholder={t.chat.searchPlaceholder}
             autoComplete="off"
             autoCapitalize="none"
             spellCheck={false}
@@ -103,8 +189,9 @@ export function NewChat({ onStarted }: { onStarted: (id: number) => void }) {
             <li key={u.username}>
               <button
                 type="button"
-                onClick={() => start(u.username)}
+                onClick={() => groupMode ? toggleSelected(u) : start(u.username)}
                 disabled={starting !== null}
+                aria-pressed={groupMode && selectedUsers.some((item) => item.username === u.username)}
                 className="flex w-full items-center gap-3 rounded-lg p-2 text-start hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-60"
               >
                 <UserAvatar
@@ -128,6 +215,18 @@ export function NewChat({ onStarted }: { onStarted: (id: number) => void }) {
           ))}
         </ul>
       )}
+
+      {groupMode && (
+        <Button
+          type="button"
+          onClick={createGroup}
+          disabled={creatingGroup || !groupName.trim() || selectedUsers.length === 0}
+          className="mt-2 h-9 w-full rounded-xl"
+        >
+          {creatingGroup ? t.chat.groupCreating : t.chat.groupCreate}
+        </Button>
+      )}
     </div>
   )
 }
+

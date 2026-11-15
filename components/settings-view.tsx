@@ -38,7 +38,12 @@ export function SettingsView({
   const [preview, setPreview] = useState<string | null>(null)
   const [removePhoto, setRemovePhoto] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false)
   const photoRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    setNotificationsEnabled(localStorage.getItem('handle.notifications.enabled.v1') === 'true')
+  }, [])
 
   useEffect(() => {
     if (!photo) {
@@ -49,6 +54,23 @@ export function SettingsView({
     setPreview(url)
     return () => URL.revokeObjectURL(url)
   }, [photo])
+
+  async function enableNotifications() {
+    setError(null)
+    if (typeof Notification === 'undefined') {
+      setError(t.settings.notificationsDenied)
+      return
+    }
+    const permission = Notification.permission === 'granted'
+      ? 'granted'
+      : await Notification.requestPermission()
+    if (permission !== 'granted') {
+      setError(t.settings.notificationsDenied)
+      return
+    }
+    localStorage.setItem('handle.notifications.enabled.v1', 'true')
+    setNotificationsEnabled(true)
+  }
 
   async function saveProfile() {
     if (pending) return
@@ -230,6 +252,14 @@ export function SettingsView({
               {error}
             </p>
           )}
+        </section>
+
+        <section className="mt-4 rounded-2xl border bg-card p-5 shadow-sm sm:p-6">
+          <h2 className="font-semibold">{t.settings.notifications}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{t.settings.notificationsHint}</p>
+          <Button type="button" variant="outline" disabled={notificationsEnabled} onClick={() => void enableNotifications()} className="mt-4">
+            {notificationsEnabled ? t.settings.notificationsEnabled : t.settings.enableNotifications}
+          </Button>
         </section>
 
         <section className="mt-4 rounded-2xl border bg-card p-5 shadow-sm sm:p-6">

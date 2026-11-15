@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { Settings } from 'lucide-react'
+import { BellOff, Settings, Users } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
 import { LanguageToggle } from '@/components/language-toggle'
 import { buttonVariants } from '@/components/ui/button'
@@ -13,6 +13,7 @@ import {
   type CurrentUser,
 } from './types'
 import { UserAvatar } from './user-avatar'
+import { StatusStrip } from './status-strip'
 
 type SidebarProps = {
   currentUser: CurrentUser
@@ -54,6 +55,8 @@ export function Sidebar({
         </Link>
       </header>
 
+      <StatusStrip currentUser={currentUser} />
+
       <NewChat onStarted={onSelect} />
 
       <nav
@@ -89,6 +92,18 @@ export function Sidebar({
               const isActive = c.id === activeId
               const messagePreview = c.lastBody
                 ? c.lastBody
+                : c.lastMessageType === 'voice'
+                  ? t.chat.recordVoice
+                  : c.lastMessageType === 'document'
+                    ? t.chat.document
+                    : c.lastMessageType === 'poll'
+                      ? t.chat.poll
+                      : c.lastMessageType === 'event'
+                        ? t.chat.event
+                        : c.lastMessageType === 'contact'
+                          ? t.chat.contact
+                          : c.lastMessageType === 'location'
+                            ? t.chat.location
                 : c.lastMediaType?.startsWith('video/')
                   ? t.chat.videoMessage
                   : c.lastMediaType?.startsWith('image/')
@@ -116,16 +131,18 @@ export function Sidebar({
                     <span className="min-w-0 flex-1">
                       <span className="flex items-baseline justify-between gap-2">
                         <span className="truncate text-sm font-semibold">
+                          {c.isGroup && <Users className="me-1 inline size-3.5" aria-hidden="true" />}
                           {c.otherName}
                         </span>
                         <span
                           className={cn(
-                            'shrink-0 text-xs',
+                            'flex shrink-0 items-center gap-1 text-xs',
                             c.unreadCount > 0
                               ? 'font-medium text-primary'
                               : 'text-muted-foreground',
                           )}
                         >
+                          {c.isMuted && <BellOff className="size-3" aria-label={t.chat.muteConversation} />}
                           {formatListTime(c.lastMessageAt, locale)}
                         </span>
                       </span>

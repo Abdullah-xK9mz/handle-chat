@@ -10,14 +10,19 @@ export type CurrentUser = {
 export type ConversationSummary = {
   id: number
   lastMessageAt: string
+  isGroup: boolean
+  groupName: string | null
+  participantCount: number
   otherUserId: string
   otherUsername: string | null
   otherName: string
   otherImage: string | null
   lastBody: string | null
   lastMediaType: string | null
+  lastMessageType: string | null
   lastSenderId: string | null
   unreadCount: number
+  isMuted: boolean
 }
 
 export type ChatMessage = {
@@ -28,13 +33,45 @@ export type ChatMessage = {
   mediaPath?: string | null
   mediaType?: string | null
   mediaName?: string | null
+  messageType?: string
+  payload?: Record<string, unknown>
   pending?: boolean
 }
 
 export type ConversationDetail = {
-  other: { username: string | null; name: string; image: string | null } | null
+  other: {
+    username: string | null
+    name: string
+    image: string | null
+    isGroup?: boolean
+    participantCount?: number
+    members?: Array<{ id: string; name: string; username: string; image: string | null }>
+    isBlockedByMe?: boolean
+    isBlocked?: boolean
+  } | null
+  conversation?: {
+    id: number
+    isGroup: boolean
+    name: string | null
+    participantCount: number
+    isMuted: boolean
+  }
   otherLastReadAt: string | null
   messages: ChatMessage[]
+}
+
+export type StatusEntry = {
+  id: string
+  userId: string
+  name: string
+  username: string
+  image: string | null
+  body: string
+  mediaPath: string | null
+  mediaType: string | null
+  mediaName: string | null
+  createdAt: string
+  expiresAt: string
 }
 
 export class ApiError extends Error {
