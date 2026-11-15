@@ -174,7 +174,7 @@ function validConversationId(value: unknown) {
 
 async function handle(request: Request) {
   if (request.method === "OPTIONS") {
-    return new Response("", { status: 204, headers: corsHeaders });
+    return new Response(null, { status: 204, headers: corsHeaders });
   }
   if (request.method !== "POST") return json({ error: "NOT_FOUND" }, 405);
 
@@ -273,3 +273,4 @@ async function handle(request: Request) {
 }
 
 Deno.serve(handle);
+
