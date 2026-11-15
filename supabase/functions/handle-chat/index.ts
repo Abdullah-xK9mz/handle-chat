@@ -35,6 +35,10 @@ function getSecretKey() {
   return legacyKey;
 }
 
+function getServiceAuthorizationKey() {
+  return Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? SECRET_KEY;
+}
+
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: corsHeaders });
 }
@@ -111,7 +115,7 @@ async function createSignedMediaUrl(path: string) {
       method: "POST",
       headers: {
         apikey: SECRET_KEY,
-        Authorization: `Bearer ${SECRET_KEY}`,
+        Authorization: `Bearer ${getServiceAuthorizationKey()}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ expiresIn: 3600 }),
