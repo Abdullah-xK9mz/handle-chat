@@ -1,0 +1,150 @@
+'use client'
+
+import Link from 'next/link'
+import { Settings } from 'lucide-react'
+import { useI18n } from '@/components/i18n-provider'
+import { LanguageToggle } from '@/components/language-toggle'
+import { buttonVariants } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
+import { NewChat } from './new-chat'
+import {
+  formatListTime,
+  type ConversationSummary,
+  type CurrentUser,
+} from './types'
+import { UserAvatar } from './user-avatar'
+
+type SidebarProps = {
+  currentUser: CurrentUser
+  conversations: ConversationSummary[]
+  isLoading: boolean
+  error: unknown
+  activeId: number | null
+  onSelect: (id: number) => void
+}
+
+export function Sidebar({
+  currentUser,
+  conversations,
+  isLoading,
+  error,
+  activeId,
+  onSelect,
+}: SidebarProps) {
+  const { t, locale } = useI18n()
+
+  return (
+    <>
+      <header className="flex items-center gap-3 border-b px-4 py-3">
+        <UserAvatar name={currentUser.name} image={currentUser.image} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold">{currentUser.name}</p>
+          <p className="truncate text-xs text-muted-foreground" dir="ltr">
+            <span className="inline-block">@{currentUser.username}</span>
+          </p>
+        </div>
+        <LanguageToggle compact />
+        <Link
+          href="/settings"
+          aria-label={t.chat.settings}
+          title={t.chat.settings}
+          className={buttonVariants({ variant: 'ghost', size: 'icon' })}
+        >
+          <Settings />
+        </Link>
+      </header>
+
+      <NewChat onStarted={onSelect} />
+
+      <nav
+        aria-label={t.chat.conversations}
+        className="min-h-0 flex-1 overflow-y-auto"
+      >
+        {isLoading ? (
+          <ul className="flex flex-col gap-1 p-2" aria-hidden="true">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <li key={i} className="flex items-center gap-3 rounded-xl p-3">
+                <span className="size-11 animate-pulse rounded-full bg-muted" />
+                <span className="flex flex-1 flex-col gap-2">
+                  <span className="h-3 w-1/2 animate-pulse rounded bg-muted" />
+                  <span className="h-3 w-3/4 animate-pulse rounded bg-muted" />
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : error ? (
+          <p className="p-6 text-center text-sm text-destructive">
+            {t.chat.loadError}
+          </p>
+        ) : conversations.length === 0 ? (
+          <div className="flex flex-col gap-1 p-6 text-center">
+            <p className="text-sm font-medium">{t.chat.noConversations}</p>
+            <p className="text-sm text-muted-foreground text-pretty">
+              {t.chat.noConversationsBody}
+            </p>
+          </div>
+        ) : (
+          <ul className="flex flex-col gap-0.5 p-2">
+            {conversations.map((c) => {
+              const isActive = c.id === activeId
+              const preview = c.lastBody
+                ? `${c.lastSenderId === currentUser.id ? t.chat.youPrefix : ''}${c.lastBody}`
+                : t.chat.noMessagesYet
+              return (
+                <li key={c.id}>
+                  <button
+                    type="button"
+                    onClick={() => onSelect(c.id)}
+                    aria-current={isActive ? 'true' : undefined}
+                    className={cn(
+                      'flex w-full items-center gap-3 rounded-xl p-3 text-start transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
+                      isActive && 'bg-accent hover:bg-accent',
+                    )}
+                  >
+                    <UserAvatar
+                      name={c.otherName}
+                      image={c.otherImage}
+                      className="size-11"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-baseline justify-between gap-2">
+                        <span className="truncate text-sm font-semibold">
+                          {c.otherName}
+                        </span>
+                        <span
+                          className={cn(
+                            'shrink-0 text-xs',
+                            c.unreadCount > 0
+                              ? 'font-medium text-primary'
+                              : 'text-muted-foreground',
+                          )}
+                        >
+                          {formatListTime(c.lastMessageAt, locale)}
+                        </span>
+                      </span>
+                      <span className="mt-0.5 flex items-center justify-between gap-2">
+                        <span className="truncate text-sm text-muted-foreground">
+                          {preview}
+                        </span>
+                        {c.unreadCount > 0 && (
+                          <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground">
+                            <span aria-hidden="true">
+                              {c.unreadCount.toLocaleString(locale)}
+                            </span>
+                            <span className="sr-only">
+                              {t.chat.unread(c.unreadCount)}
+                            </span>
+                          </span>
+                        )}
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </nav>
+    </>
+  )
+}
