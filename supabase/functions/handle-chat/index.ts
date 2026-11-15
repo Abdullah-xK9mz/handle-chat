@@ -69,6 +69,10 @@ async function rpc(name: string, args: Record<string, unknown>) {
       "SELF_CHAT",
       "EMPTY_MESSAGE",
       "MESSAGE_TOO_LONG",
+      "INVALID_MEDIA",
+      "INVALID_IMAGE",
+      "NAME_REQUIRED",
+      "NAME_TOO_LONG",
       "NOT_FOUND",
     ].find((code) => searchable.includes(code));
     if (known) {
@@ -94,6 +98,36 @@ async function authenticate(request: Request) {
   const user = await response.json();
   if (typeof user?.id !== "string") throw new ChatError("UNAUTHORIZED", 401);
   return user as { id: string };
+}
+
+function encodeObjectPath(path: string) {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
+async function createSignedMediaUrl(path: string) {
+  const response = await fetch(
+    `${SUPABASE_URL}/storage/v1/object/sign/chat-media/${encodeObjectPath(path)}`,
+    {
+      method: "POST",
+      headers: {
+        apikey: SECRET_KEY,
+        Authorization: `Bearer ${SECRET_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ expiresIn: 3600 }),
+    },
+  );
+  if (!response.ok) throw new ChatError("GENERIC", 500);
+
+  const data = await response.json();
+  const signed = data?.signedURL ?? data?.signedUrl;
+  if (typeof signed !== "string") throw new ChatError("GENERIC", 500);
+  const url = signed.startsWith("http")
+    ? signed
+    : signed.startsWith("/storage/v1/")
+      ? `${SUPABASE_URL}${signed}`
+      : `${SUPABASE_URL}/storage/v1${signed.startsWith("/") ? signed : `/${signed}`}`;
+  return { url, expiresAt: Math.floor(Date.now() / 1000) + 3600 };
 }
 
 async function signUp(body: Record<string, unknown>) {
@@ -261,6 +295,54 @@ async function handle(request: Request) {
           p_body: body.body,
         });
         return json({ message });
+      }
+      case "send-media": {
+        const conversationId = validConversationId(body.conversationId);
+        const mediaPath = typeof body.mediaPath === "string" ? body.mediaPath : "";
+        const mediaType = typeof body.mediaType === "string" ? body.mediaType : "";
+        const mediaName = typeof body.mediaName === "string" ? body.mediaName : "";
+        const caption = typeof body.body === "string" ? body.body : "";
+        if (mediaPath.length > 500 || mediaName.length > 255) {
+          throw new ChatError("INVALID_MEDIA", 400);
+        }
+        const message = await rpc("chat_send_media", {
+          p_conversation_id: conversationId,
+          p_user_id: user.id,
+          p_body: caption,
+          p_media_path: mediaPath,
+          p_media_type: mediaType,
+          p_media_name: mediaName,
+        });
+        return json({ message });
+      }
+      case "get-media-url": {
+        const conversationId = validConversationId(body.conversationId);
+        const mediaPath = typeof body.mediaPath === "string" ? body.mediaPath : "";
+        const allowed = await rpc("chat_can_access_media", {
+          p_conversation_id: conversationId,
+          p_user_id: user.id,
+          p_media_path: mediaPath,
+        });
+        if (!allowed) throw new ChatError("NOT_FOUND", 404);
+        return json(await createSignedMediaUrl(mediaPath));
+      }
+      case "update-profile": {
+        const name = typeof body.name === "string" ? body.name : "";
+        const avatarPath = typeof body.avatarPath === "string" ? body.avatarPath : null;
+        const updateImage = body.updateImage === true;
+        if (
+          avatarPath &&
+          (!avatarPath.startsWith(`${user.id}/`) || avatarPath.length > 200)
+        ) {
+          throw new ChatError("INVALID_IMAGE", 400);
+        }
+        const profile = await rpc("chat_update_profile", {
+          p_user_id: user.id,
+          p_name: name,
+          p_avatar_path: avatarPath,
+          p_update_image: updateImage,
+        });
+        return json(profile);
       }
       default:
         throw new ChatError("NOT_FOUND", 404);

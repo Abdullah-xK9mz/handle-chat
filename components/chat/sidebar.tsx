@@ -87,9 +87,16 @@ export function Sidebar({
           <ul className="flex flex-col gap-0.5 p-2">
             {conversations.map((c) => {
               const isActive = c.id === activeId
-              const preview = c.lastBody
-                ? `${c.lastSenderId === currentUser.id ? t.chat.youPrefix : ''}${c.lastBody}`
-                : t.chat.noMessagesYet
+              const messagePreview = c.lastBody
+                ? c.lastBody
+                : c.lastMediaType?.startsWith('video/')
+                  ? t.chat.videoMessage
+                  : c.lastMediaType?.startsWith('image/')
+                    ? t.chat.photoMessage
+                    : t.chat.noMessagesYet
+              const preview = c.lastSenderId === currentUser.id && c.lastSenderId
+                ? `${t.chat.youPrefix}${messagePreview}`
+                : messagePreview
               return (
                 <li key={c.id}>
                   <button
@@ -148,3 +155,4 @@ export function Sidebar({
     </>
   )
 }
+

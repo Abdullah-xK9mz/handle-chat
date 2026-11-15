@@ -15,6 +15,7 @@ export type ConversationSummary = {
   otherName: string
   otherImage: string | null
   lastBody: string | null
+  lastMediaType: string | null
   lastSenderId: string | null
   unreadCount: number
 }
@@ -24,6 +25,9 @@ export type ChatMessage = {
   senderId: string
   body: string
   createdAt: string
+  mediaPath?: string | null
+  mediaType?: string | null
+  mediaName?: string | null
   pending?: boolean
 }
 
@@ -90,4 +94,5 @@ export function formatDayLabel(
     day: 'numeric',
   })
 }
+
 
