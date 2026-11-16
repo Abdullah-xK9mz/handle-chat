@@ -1,7 +1,8 @@
 'use client'
 
 import Link from 'next/link'
-import { BellOff, CircleDashed, MessageSquareText, Settings, Users } from 'lucide-react'
+import { BellOff, CircleDashed, MessageSquareText, MoreHorizontal, Settings, Shield, Trash2, Users } from 'lucide-react'
+import { useRef, useState } from 'react'
 import { useI18n } from '@/components/i18n-provider'
 import { LanguageToggle } from '@/components/language-toggle'
 import { buttonVariants } from '@/components/ui/button'
@@ -24,6 +25,7 @@ type SidebarProps = {
   error: unknown
   activeId: number | null
   onSelect: (id: number) => void
+  onDeleteConversation: (id: number) => void
   section: SidebarSection
   onSectionChange: (section: SidebarSection) => void
 }
@@ -35,11 +37,29 @@ export function Sidebar({
   error,
   activeId,
   onSelect,
+  onDeleteConversation,
   section,
   onSectionChange,
 }: SidebarProps) {
   const { t, locale } = useI18n()
+  const [openActionsId, setOpenActionsId] = useState<number | null>(null)
+  const holdTimer = useRef<number | null>(null)
+  const longPressTriggered = useRef(false)
   const visibleConversations = conversations.filter((conversation) => section === 'groups' ? conversation.isGroup : !conversation.isGroup)
+
+  function startHold(id: number) {
+    longPressTriggered.current = false
+    if (holdTimer.current !== null) window.clearTimeout(holdTimer.current)
+    holdTimer.current = window.setTimeout(() => {
+      longPressTriggered.current = true
+      setOpenActionsId(id)
+    }, 550)
+  }
+
+  function clearHold() {
+    if (holdTimer.current !== null) window.clearTimeout(holdTimer.current)
+    holdTimer.current = null
+  }
 
   return (
     <>
@@ -61,6 +81,16 @@ export function Sidebar({
         >
           <Settings />
         </Link>
+        {currentUser.isAdmin && (
+          <Link
+            href="/admin"
+            aria-label={t.chat.adminPanel}
+            title={t.chat.adminPanel}
+            className={buttonVariants({ variant: 'ghost', size: 'icon' })}
+          >
+            <Shield />
+          </Link>
+        )}
       </header>
 
       {section !== 'statuses' && <NewChat key={section} initialGroupMode={section === 'groups'} showModeToggle={section === 'chats'} onStarted={onSelect} />}
@@ -119,13 +149,30 @@ export function Sidebar({
                 ? `${t.chat.youPrefix}${messagePreview}`
                 : messagePreview
               return (
-                <li key={c.id}>
+                <li
+                  key={c.id}
+                  className="group relative"
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    setOpenActionsId(c.id)
+                  }}
+                  onTouchStart={() => startHold(c.id)}
+                  onTouchEnd={clearHold}
+                  onTouchMove={clearHold}
+                >
                   <button
                     type="button"
-                    onClick={() => onSelect(c.id)}
+                    onClick={() => {
+                      if (longPressTriggered.current) {
+                        longPressTriggered.current = false
+                        return
+                      }
+                      setOpenActionsId(null)
+                      onSelect(c.id)
+                    }}
                     aria-current={isActive ? 'true' : undefined}
                     className={cn(
-                      'flex w-full items-center gap-3 rounded-xl p-3 text-start transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
+                      'flex w-full items-center gap-3 rounded-xl p-3 pe-11 text-start transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
                       isActive && 'bg-accent hover:bg-accent',
                     )}
                   >
@@ -149,44 +196,4 @@ export function Sidebar({
                           )}
                         >
                           {c.isMuted && <BellOff className="size-3" aria-label={t.chat.muteConversation} />}
-                          {formatListTime(c.lastMessageAt, locale)}
-                        </span>
-                      </span>
-                      <span className="mt-0.5 flex items-center justify-between gap-2">
-                        <span className="truncate text-sm text-muted-foreground">
-                          {preview}
-                        </span>
-                        {c.unreadCount > 0 && (
-                          <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground">
-                            <span aria-hidden="true">
-                              {c.unreadCount.toLocaleString(locale)}
-                            </span>
-                            <span className="sr-only">
-                              {t.chat.unread(c.unreadCount)}
-                            </span>
-                          </span>
-                        )}
-                      </span>
-                    </span>
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-        )}
-      </nav>
-      <nav aria-label={t.chat.tabs.chats} className="grid shrink-0 grid-cols-3 border-t bg-background px-2 pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1 md:pb-1">
-        {([
-          ['chats', t.chat.tabs.chats, MessageSquareText],
-          ['groups', t.chat.tabs.groups, Users],
-          ['statuses', t.chat.tabs.statuses, CircleDashed],
-        ] as const).map(([id, label, Icon]) => (
-          <button key={id} type="button" onClick={() => onSectionChange(id)} aria-current={section === id ? 'page' : undefined} className={cn('flex min-h-14 flex-col items-center justify-center gap-1 rounded-xl text-[11px] text-muted-foreground transition-colors hover:bg-muted', section === id && 'bg-primary/10 font-semibold text-primary')}>
-            <Icon className="size-5" aria-hidden="true" />
-            <span>{label}</span>
-          </button>
-        ))}
-      </nav>
-    </>
-  )
-}
+                          {form

@@ -6,6 +6,7 @@ export type CurrentUser = {
   username: string
   image: string | null
   about?: string
+  isAdmin?: boolean
 }
 
 export type ConversationSummary = {

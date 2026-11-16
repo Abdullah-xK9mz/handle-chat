@@ -55,6 +55,7 @@ export default function HomePage() {
         username: profile.username,
         image: profile.image,
         about: profile.about,
+        isAdmin: profile.isAdmin,
       }}
     />
   )

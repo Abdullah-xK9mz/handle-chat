@@ -18,8 +18,8 @@
 
 ## قاعدة البيانات
 
-مشروع Supabase باسم handle-chat-cloud جاهز، ومخطط البيانات ووظيفة handle-chat تم إعدادهم. رابط المشروع:
-https://supabase.com/dashboard/project/uzzjkfriikqsoxjlzjbe
+مشروع Supabase باسم handle-chat جاهز في منطقة فرانكفورت، ومخطط البيانات ووظيفة handle-chat تم إعدادهم. رابط المشروع:
+https://supabase.com/dashboard/project/nvujfvmnquiiirytxnwr
 
 المفتاح الموجود في ملفات المتصفح مفتاح نشر عام. المفتاح الخاص موجود داخل Supabase فقط ولا ترفعه على GitHub.
 

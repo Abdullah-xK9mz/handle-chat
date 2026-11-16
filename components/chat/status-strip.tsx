@@ -25,6 +25,8 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
   const fileRef = useRef<HTMLInputElement>(null)
 
   const statuses = data?.statuses ?? []
+  const myStatuses = statuses.filter((status) => status.userId === currentUser.id)
+  const latestOwnStatus = myStatuses[0] ?? null
   const grouped = useMemo(() => {
     const groups = new Map<string, StatusEntry[]>()
     for (const status of [...statuses].reverse()) {
@@ -103,15 +105,28 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
       <section className={fullPage ? 'min-h-full p-4 sm:p-6' : 'border-b px-3 py-3'} aria-label={t.chat.statusTitle}>
         {fullPage && <h2 className="mb-4 text-base font-semibold">{t.chat.statusTitle}</h2>}
         <div className={fullPage ? 'grid grid-cols-3 gap-4 sm:grid-cols-4 md:grid-cols-3 lg:grid-cols-4' : 'flex gap-3 overflow-x-auto pb-1'}>
-          <button type="button" className={`flex ${fullPage ? 'w-full' : 'w-16 shrink-0'} flex-col items-center gap-2`} onClick={() => setCreating(true)}>
-            <span className="relative rounded-full border-2 border-dashed border-primary p-0.5">
-              <UserAvatar name={currentUser.name} image={currentUser.image} className={fullPage ? 'size-16' : 'size-11'} />
-              <span className="absolute -bottom-1 -end-1 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                <Plus className="size-3.5" />
+          <div className={`relative flex ${fullPage ? 'w-full' : 'w-16 shrink-0'} flex-col items-center gap-2`}>
+            <button
+              type="button"
+              className="flex flex-col items-center gap-2"
+              onClick={() => latestOwnStatus ? void openStatus(latestOwnStatus) : setCreating(true)}
+              aria-label={latestOwnStatus ? `${t.chat.myStatus}: ${latestOwnStatus.body || latestOwnStatus.mediaName || t.chat.statusTitle}` : t.chat.addStatus}
+            >
+              <span className={`rounded-full p-0.5 ${latestOwnStatus ? 'bg-primary' : 'border-2 border-dashed border-primary'}`}>
+                <UserAvatar name={currentUser.name} image={currentUser.image} className={fullPage ? 'size-16' : 'size-11'} />
               </span>
-            </span>
-            <span className="w-full truncate text-center text-xs">{t.chat.myStatus}</span>
-          </button>
+              <span className="w-full truncate text-center text-xs">{t.chat.myStatus}</span>
+            </button>
+            <button
+              type="button"
+              className="absolute top-10 end-0 flex size-6 items-center justify-center rounded-full border-2 border-background bg-primary text-primary-foreground shadow-sm"
+              onClick={() => setCreating(true)}
+              aria-label={t.chat.addStatus}
+              title={t.chat.addStatus}
+            >
+              <Plus className="size-3.5" />
+            </button>
+          </div>
           {grouped.filter((status) => status.userId !== currentUser.id).map((status) => (
             <button key={status.userId} type="button" className={`flex ${fullPage ? 'w-full' : 'w-16 shrink-0'} flex-col items-center gap-2`} onClick={() => void openStatus(status)}>
               <span className="rounded-full bg-primary p-0.5">
@@ -156,37 +171,4 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
             </div>
             <p className="mt-2 text-xs text-muted-foreground">{t.chat.statusExpires}</p>
             {error && <p role="alert" className="mt-3 text-sm text-destructive">{error}</p>}
-            <Button type="button" className="mt-4 w-full" disabled={busy || (!statusText.trim() && !file)} onClick={() => void publishStatus()}>
-              {busy ? t.chat.uploadingMedia : t.chat.publishStatus}
-            </Button>
-          </section>
-        </div>
-      )}
-
-      {viewing && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black p-3 text-white sm:p-6" role="dialog" aria-modal="true" aria-label={t.chat.statusTitle}>
-          <div className="absolute inset-x-0 top-0 flex gap-1 p-3">
-            {viewedList.map((status) => <span key={status.id} className={`h-1 flex-1 rounded-full ${status.id === viewing.id ? 'bg-white' : 'bg-white/40'}`} />)}
-          </div>
-          <header className="absolute inset-x-3 top-6 z-10 flex items-center gap-3 sm:inset-x-6">
-            <UserAvatar name={viewing.name} image={viewing.image} />
-            <span className="min-w-0 flex-1 truncate text-sm font-medium">{viewing.name}</span>
-            {viewing.userId === currentUser.id && <Button type="button" variant="ghost" size="icon" className="text-white hover:bg-white/15" onClick={() => void removeStatus()} aria-label={t.chat.deleteStatus}><Trash2 /></Button>}
-            <Button type="button" variant="ghost" size="icon" className="text-white hover:bg-white/15" onClick={() => setViewing(null)} aria-label={t.chat.back}><X /></Button>
-          </header>
-          <Button type="button" variant="ghost" size="icon" className="absolute start-2 z-10 text-white hover:bg-white/15" onClick={() => moveStatus(-1)} aria-label={t.chat.previousStatus}><ArrowLeft className="rtl:rotate-180" /></Button>
-          <div className="flex max-h-full w-full max-w-2xl flex-col items-center justify-center gap-4 pt-16">
-            {viewing.mediaPath && viewUrl && (
-              viewing.mediaType?.startsWith('video/')
-                ? <video src={viewUrl} controls autoPlay playsInline className="max-h-[70dvh] max-w-full rounded-xl" />
-                : <img src={viewUrl} alt={viewing.mediaName ?? t.chat.statusTitle} className="max-h-[70dvh] max-w-full rounded-xl object-contain" />
-            )}
-            {viewing.body && <p dir="auto" className="max-w-xl whitespace-pre-wrap text-center text-lg">{viewing.body}</p>}
-            <time className="text-xs text-white/70">{new Date(viewing.createdAt).toLocaleString()}</time>
-          </div>
-          <Button type="button" variant="ghost" size="icon" className="absolute end-2 z-10 text-white hover:bg-white/15" onClick={() => moveStatus(1)} aria-label={t.chat.nextStatus}><ArrowRight className="rtl:rotate-180" /></Button>
-        </div>
-      )}
-    </>
-  )
-}
+            <Button type="button" className="mt-4 w-full" disabled={busy || (!statusText.trim() && !file)} onClick={() => void publishSta

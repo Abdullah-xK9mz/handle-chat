@@ -1,8 +1,8 @@
 import { normalizeUsername, placeholderEmail } from './username'
 
-export const SUPABASE_URL = 'https://uzzjkfriikqsoxjlzjbe.supabase.co'
+export const SUPABASE_URL = 'https://nvujfvmnquiiirytxnwr.supabase.co'
 export const SUPABASE_PUBLISHABLE_KEY =
-  'sb_publishable_6g-JJIZlZRYHNhlNXE9eMA_Ohx9Eksu'
+  'sb_publishable_9rUSTLd0IF1jMrLZbuyasw_u0JQHOlu'
 
 const FUNCTION_URL = `${SUPABASE_URL}/functions/v1/handle-chat`
 const SESSION_KEY = 'handle.supabase.session.v1'
@@ -39,6 +39,7 @@ export type Profile = {
   username: string
   image: string | null
   about: string
+  isAdmin?: boolean
 }
 
 type Session = {
@@ -281,169 +282,4 @@ async function uploadTusFile(file: File, path: string, session: Session) {
     const response = await fetch(uploadUrl, {
       method: 'PATCH',
       headers: {
-        apikey: SUPABASE_PUBLISHABLE_KEY,
-        Authorization: `Bearer ${session.access_token}`,
-        'Tus-Resumable': '1.0.0',
-        'Upload-Offset': String(offset),
-        'Content-Type': 'application/offset+octet-stream',
-      },
-      body: file.slice(offset, chunkEnd),
-    })
-    if (!response.ok) {
-      throw new SupabaseError(
-        response.status === 413 ? 'MEDIA_TOO_LARGE' : 'UPLOAD_FAILED',
-        response.status,
-      )
-    }
-    const nextOffset = Number(response.headers.get('Upload-Offset'))
-    if (!Number.isFinite(nextOffset) || nextOffset <= offset) {
-      throw new SupabaseError('UPLOAD_FAILED', 500)
-    }
-    offset = nextOffset
-  }
-}
-
-async function deleteStorageObject(
-  bucket: string,
-  path: string,
-  session: Session,
-) {
-  try {
-    await fetch(
-      `${SUPABASE_URL}/storage/v1/object/${bucket}/${encodeObjectPath(path)}`,
-      {
-        method: 'DELETE',
-        headers: {
-          apikey: SUPABASE_PUBLISHABLE_KEY,
-          Authorization: `Bearer ${session.access_token}`,
-        },
-      },
-    )
-  } catch {
-    // A failed cleanup does not change the message/profile request result.
-  }
-}
-
-export async function sendChatMedia<T>(
-  conversationId: number,
-  file: File,
-  body: string,
-  replyToId?: number | null,
-): Promise<T> {
-  if (file.size > MAX_MEDIA_SIZE) {
-    throw new SupabaseError('MEDIA_TOO_LARGE', 413)
-  }
-  const extension = uploadExtension(file, Object.keys(MEDIA_EXTENSIONS))
-  const session = await getSession()
-  if (!session) throw new SupabaseError('UNAUTHORIZED', 401)
-
-  const mediaPath = `${conversationId}/${session.user.id}/${crypto.randomUUID()}.${extension}`
-  await uploadTusFile(file, mediaPath, session)
-  try {
-    const result = await edgeRequest<{ message: T }>({
-      action: 'send-media',
-      conversationId,
-      body,
-      mediaPath,
-      mediaType: file.type,
-      mediaName: file.name.slice(0, 255),
-      replyToId: replyToId ?? null,
-    })
-    return result.message
-  } catch (error) {
-    await deleteStorageObject('chat-media', mediaPath, session)
-    throw error
-  }
-}
-
-export async function uploadAvatar(file: File, userId: string) {
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-    throw new SupabaseError('INVALID_IMAGE', 400)
-  }
-  if (file.size > MAX_AVATAR_SIZE) {
-    throw new SupabaseError('IMAGE_TOO_LARGE', 413)
-  }
-  const session = await getSession()
-  if (!session || session.user.id !== userId) {
-    throw new SupabaseError('UNAUTHORIZED', 401)
-  }
-
-  const extension = MEDIA_EXTENSIONS[file.type]
-  const path = `${userId}/${crypto.randomUUID()}.${extension}`
-  const response = await fetch(
-    `${SUPABASE_URL}/storage/v1/object/avatars/${encodeObjectPath(path)}`,
-    {
-      method: 'POST',
-      headers: {
-        apikey: SUPABASE_PUBLISHABLE_KEY,
-        Authorization: `Bearer ${session.access_token}`,
-        'Content-Type': file.type,
-        'cache-control': '3600',
-        'x-upsert': 'false',
-      },
-      body: file,
-    },
-  )
-  if (!response.ok) {
-    throw new SupabaseError(
-      response.status === 413 ? 'IMAGE_TOO_LARGE' : 'UPLOAD_FAILED',
-      response.status,
-    )
-  }
-  return path
-}
-
-export async function uploadStatusMedia(file: File, userId: string) {
-  if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'video/webm', 'video/quicktime'].includes(file.type)) {
-    throw new SupabaseError('INVALID_MEDIA', 400)
-  }
-  if (file.size > MAX_MEDIA_SIZE) throw new SupabaseError('MEDIA_TOO_LARGE', 413)
-  const session = await getSession()
-  if (!session || session.user.id !== userId) throw new SupabaseError('UNAUTHORIZED', 401)
-  const path = `status/${userId}/${crypto.randomUUID()}.${MEDIA_EXTENSIONS[file.type]}`
-  await uploadTusFile(file, path, session)
-  return path
-}
-
-export async function chatRequest<T>(
-  path: string,
-  init?: RequestInit,
-): Promise<T> {
-  const requestUrl = new URL(path, window.location.origin)
-  const method = init?.method?.toUpperCase() ?? 'GET'
-  const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
-  let payload: Record<string, unknown>
-
-  if (requestUrl.pathname === '/api/statuses') {
-    payload = { action: 'list-statuses' }
-  } else if (requestUrl.pathname === '/api/conversations') {
-    payload =
-      method === 'POST'
-        ? { action: 'start-conversation', username: body.username }
-        : { action: 'list-conversations' }
-  } else if (requestUrl.pathname === '/api/users') {
-    payload = {
-      action: 'search-users',
-      query: requestUrl.searchParams.get('q') ?? '',
-    }
-  } else {
-    const match = requestUrl.pathname.match(
-      /^\/api\/conversations\/(\d+)\/messages$/,
-    )
-    if (!match) throw new SupabaseError('NOT_FOUND', 404)
-    payload =
-      method === 'POST'
-        ? {
-            action: 'send-message',
-            conversationId: Number(match[1]),
-            body: body.body,
-            replyToId: body.replyToId ?? null,
-          }
-        : {
-            action: 'get-messages',
-            conversationId: Number(match[1]),
-          }
-  }
-
-  return edgeRequest<T>(payload)
-}
+        apikey: 

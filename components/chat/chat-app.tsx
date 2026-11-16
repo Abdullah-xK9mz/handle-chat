@@ -5,7 +5,7 @@ import useSWR from 'swr'
 import { MessageCircle } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
 import { cn } from '@/lib/utils'
-import { chatRequest } from '@/lib/supabase'
+import { chatRequest, edgeRequest } from '@/lib/supabase'
 import { ConversationView } from './conversation-view'
 import { Sidebar, type SidebarSection } from './sidebar'
 import {
@@ -117,6 +117,17 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
     setSection(next)
   }
 
+  async function deleteConversation(id: number) {
+    if (!window.confirm(t.chat.deleteConversationConfirm)) return
+    try {
+      await edgeRequest({ action: 'delete-conversation', conversationId: id })
+      if (activeIdRef.current === id) setActiveId(null)
+      await mutate()
+    } catch {
+      window.alert(t.errors.GENERIC)
+    }
+  }
+
   return (
     <div className="h-dvh w-screen overflow-hidden bg-background">
       <div className="mx-auto flex h-dvh w-full max-w-none overflow-hidden bg-background">
@@ -133,6 +144,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
             error={error}
             activeId={activeId}
             onSelect={openConversation}
+            onDeleteConversation={(id) => void deleteConversation(id)}
             section={section}
             onSectionChange={changeSection}
           />
@@ -149,6 +161,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
               key={activeId}
               conversationId={activeId}
               currentUserId={currentUser.id}
+              isAdmin={currentUser.isAdmin}
               otherUserId={active?.otherUserId}
               fallbackName={active?.otherName}
               fallbackUsername={active?.otherUsername ?? undefined}
