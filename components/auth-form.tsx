@@ -125,4 +125,8 @@ export function AuthForm({ mode }: { mode: Mode }) {
             </Button>
           </form>
         </section>
-        <p className="mt-2 text-center text-xs t
+        <p className="mt-2 text-center text-xs text-[#a49b89]">{t.appName}</p>
+      </div>
+    </main>
+  )
+}
