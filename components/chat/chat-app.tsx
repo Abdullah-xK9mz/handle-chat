@@ -17,6 +17,7 @@ import {
 export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   const { t } = useI18n()
   const [activeId, setActiveId] = useState<number | null>(null)
+  const activeIdRef = useRef<number | null>(null)
   const [section, setSection] = useState<SidebarSection>('chats')
   const deepLinkHandled = useRef(false)
   const { data, error, isLoading, mutate } = useSWR<{
@@ -46,12 +47,19 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   }, [mutate])
 
   useEffect(() => {
+    activeIdRef.current = activeId
+  }, [activeId])
+
+  useEffect(() => {
+    window.history.pushState({ handleChatHome: true }, '', window.location.href)
+
     function handleBack() {
-      if (activeId !== null) setActiveId(null)
+      if (activeIdRef.current !== null) setActiveId(null)
+      window.history.pushState({ handleChatHome: true }, '', window.location.href)
     }
     window.addEventListener('popstate', handleBack)
     return () => window.removeEventListener('popstate', handleBack)
-  }, [activeId])
+  }, [])
 
   useEffect(() => {
     if (!data) return
