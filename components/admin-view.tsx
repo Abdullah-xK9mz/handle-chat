@@ -200,4 +200,57 @@ export function AdminView({ currentUserId }: Props) {
                 <Search className="pointer-events-none absolute start-6 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input value={userQuery} onChange={(event) => setUserQuery(event.target.value)} className="h-10 rounded-full ps-10" placeholder={t.admin.searchUsers} />
               </div>
-              <div
+              <div className="max-h-60 overflow-y-auto p-2 md:max-h-none md:flex-1">
+                {filteredUsers.length === 0 ? <p className="p-4 text-sm text-muted-foreground">{t.admin.noUsers}</p> : filteredUsers.map((user) => (
+                  <button key={user.id} type="button" onClick={() => selectUser(user)} className={`flex w-full items-center gap-3 rounded-xl p-3 text-start hover:bg-muted ${selectedUserId === user.id ? 'bg-accent' : ''}`}>
+                    <UserAvatar name={user.name} image={user.image} className="size-10" />
+                    <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{user.name}</span><span className="block truncate text-xs text-muted-foreground" dir="ltr">@{user.username}</span></span>
+                    {user.role === 'admin' && <Shield className="size-4 text-primary" aria-label={t.admin.title} />}
+                  </button>
+                ))}
+              </div>
+            </aside>
+            <section className="min-h-0 overflow-y-auto p-4 sm:p-6">
+              {!selectedUser ? <p className="py-10 text-center text-sm text-muted-foreground">{t.admin.chooseUser}</p> : (
+                <form onSubmit={(event) => void saveUser(event)} className="mx-auto flex max-w-xl flex-col gap-4">
+                  <div className="mb-2 flex items-center gap-3"><UserAvatar name={draft.name} image={draft.image || null} className="size-14" /><div><p className="font-semibold">{selectedUser.name}</p><p className="text-xs text-muted-foreground">{selectedUser.role === 'admin' ? t.admin.title : t.admin.users}</p></div></div>
+                  <label className="grid gap-1.5 text-sm">{t.admin.accountName}<Input required maxLength={50} value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
+                  <label className="grid gap-1.5 text-sm">{t.admin.username}<Input required minLength={3} maxLength={20} dir="ltr" value={draft.username} onChange={(event) => setDraft({ ...draft, username: event.target.value })} /></label>
+                  <label className="grid gap-1.5 text-sm">{t.admin.imageUrl}<Input dir="ltr" value={draft.image} onChange={(event) => setDraft({ ...draft, image: event.target.value })} /></label>
+                  <label className="grid gap-1.5 text-sm">{t.admin.about}<Input maxLength={150} value={draft.about} onChange={(event) => setDraft({ ...draft, about: event.target.value })} /></label>
+                  <label className="grid gap-1.5 text-sm">{t.admin.password}<Input type="password" minLength={8} maxLength={128} autoComplete="new-password" value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} /><span className="text-xs text-muted-foreground">{t.admin.passwordHint}</span></label>
+                  <div className="flex flex-wrap gap-2 border-t pt-4">
+                    <Button type="submit" disabled={saving}>{saving ? t.admin.saving : t.admin.save}</Button>
+                    <Button type="button" variant="destructive" disabled={saving || selectedUser.id === currentUserId} onClick={() => void deleteUser(selectedUser)}><Trash2 className="me-2 size-4" />{t.admin.deleteAccount}</Button>
+                  </div>
+                </form>
+              )}
+            </section>
+          </div>
+        ) : (
+          <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(250px,0.8fr)_minmax(0,1.5fr)]">
+            <aside className="max-h-64 overflow-y-auto border-b p-2 md:max-h-none md:border-b-0 md:border-e">
+              {conversations.map((conversation) => <div key={conversation.id} className={`mb-1 flex items-center gap-1 rounded-xl p-2 ${selectedConversation === conversation.id ? 'bg-accent' : 'hover:bg-muted'}`}>
+                <button type="button" className="min-w-0 flex-1 p-1 text-start" onClick={() => void selectConversation(conversation.id)}>
+                  <span className="block truncate text-sm font-medium">{conversation.name || `${conversation.kind === 'group' ? t.chat.tabs.groups : t.admin.conversations} #${conversation.id}`}</span>
+                  <span className="text-xs text-muted-foreground">{conversation.participantCount} · {conversation.messageCount} · {new Date(conversation.lastMessageAt).toLocaleDateString(locale)}</span>
+                </button>
+                <button type="button" onClick={() => void deleteConversation(conversation)} className="flex size-9 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive" aria-label={t.admin.deleteConversation} title={t.admin.deleteConversation}><Trash2 className="size-4" /></button>
+              </div>)}
+            </aside>
+            <section className="min-h-0 overflow-y-auto p-3 sm:p-5">
+              {selectedConversation === null ? <p className="py-10 text-center text-sm text-muted-foreground">{t.admin.selectConversation}</p> : messages.length === 0 ? <p className="py-10 text-center text-sm text-muted-foreground">{t.admin.noMessages}</p> : (
+                <ol className="mx-auto flex max-w-3xl flex-col gap-2">
+                  {messages.map((message) => <li key={message.id} className="flex items-start gap-3 rounded-xl border bg-card p-3">
+                    <div className="min-w-0 flex-1"><p className="mb-1 text-[11px] text-muted-foreground" dir="ltr">{message.senderId.slice(0, 8)} · {new Date(message.createdAt).toLocaleString(locale)}</p><p className="break-words text-sm">{message.deletedAt ? t.chat.deletedMessage : message.body || message.mediaName || message.messageType}</p></div>
+                    {!message.deletedAt && <div className="flex shrink-0 gap-1"><button type="button" className="rounded-lg px-2 py-1 text-xs text-primary hover:bg-primary/10" onClick={() => void changeMessage(message, 'pin-message')}>{message.pinned ? t.admin.unpinMessage : t.admin.pinMessage}</button><button type="button" className="rounded-lg px-2 py-1 text-xs text-destructive hover:bg-destructive/10" onClick={() => void changeMessage(message, 'delete-message')}>{t.admin.deleteMessage}</button></div>}
+                  </li>)}
+                </ol>
+              )}
+            </section>
+          </div>
+        )}
+      </div>
+    </main>
+  )
+}

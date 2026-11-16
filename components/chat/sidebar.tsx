@@ -196,4 +196,71 @@ export function Sidebar({
                           )}
                         >
                           {c.isMuted && <BellOff className="size-3" aria-label={t.chat.muteConversation} />}
-                          {form
+                          {formatListTime(c.lastMessageAt, locale)}
+                        </span>
+                      </span>
+                      <span className="mt-0.5 flex items-center justify-between gap-2">
+                        <span className="truncate text-sm text-muted-foreground">
+                          {preview}
+                        </span>
+                        {c.unreadCount > 0 && (
+                          <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground">
+                            <span aria-hidden="true">
+                              {c.unreadCount.toLocaleString(locale)}
+                            </span>
+                            <span className="sr-only">
+                              {t.chat.unread(c.unreadCount)}
+                            </span>
+                          </span>
+                        )}
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="absolute end-2 top-1/2 hidden size-8 -translate-y-1/2 items-center justify-center rounded-full bg-background/90 text-muted-foreground shadow-sm hover:text-foreground group-hover:flex focus-visible:flex md:flex"
+                    aria-label={t.chat.messageActions}
+                    title={t.chat.messageActions}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      setOpenActionsId((open) => open === c.id ? null : c.id)
+                    }}
+                  >
+                    <MoreHorizontal className="size-4" />
+                  </button>
+                  {openActionsId === c.id && (
+                    <div className="absolute end-2 top-12 z-30 min-w-48 rounded-xl border bg-popover p-1.5 text-popover-foreground shadow-xl" onClick={(event) => event.stopPropagation()}>
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs text-destructive hover:bg-destructive/10"
+                        onClick={() => {
+                          setOpenActionsId(null)
+                          onDeleteConversation(c.id)
+                        }}
+                      >
+                        <Trash2 className="size-3.5" />
+                        {t.chat.deleteConversation}
+                      </button>
+                    </div>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </nav>
+      <nav aria-label={t.chat.tabs.chats} className="grid shrink-0 grid-cols-3 border-t bg-background px-2 pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1 md:pb-1">
+        {([
+          ['chats', t.chat.tabs.chats, MessageSquareText],
+          ['groups', t.chat.tabs.groups, Users],
+          ['statuses', t.chat.tabs.statuses, CircleDashed],
+        ] as const).map(([id, label, Icon]) => (
+          <button key={id} type="button" onClick={() => onSectionChange(id)} aria-current={section === id ? 'page' : undefined} className={cn('flex min-h-14 flex-col items-center justify-center gap-1 rounded-xl text-[11px] text-muted-foreground transition-colors hover:bg-muted', section === id && 'bg-primary/10 font-semibold text-primary')}>
+            <Icon className="size-5" aria-hidden="true" />
+            <span>{label}</span>
+          </button>
+        ))}
+      </nav>
+    </>
+  )
+}

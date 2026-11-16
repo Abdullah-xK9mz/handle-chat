@@ -171,4 +171,37 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
             </div>
             <p className="mt-2 text-xs text-muted-foreground">{t.chat.statusExpires}</p>
             {error && <p role="alert" className="mt-3 text-sm text-destructive">{error}</p>}
-            <Button type="button" className="mt-4 w-full" disabled={busy || (!statusText.trim() && !file)} onClick={() => void publishSta
+            <Button type="button" className="mt-4 w-full" disabled={busy || (!statusText.trim() && !file)} onClick={() => void publishStatus()}>
+              {busy ? t.chat.uploadingMedia : t.chat.publishStatus}
+            </Button>
+          </section>
+        </div>
+      )}
+
+      {viewing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black p-3 text-white sm:p-6" role="dialog" aria-modal="true" aria-label={t.chat.statusTitle}>
+          <div className="absolute inset-x-0 top-0 flex gap-1 p-3">
+            {viewedList.map((status) => <span key={status.id} className={`h-1 flex-1 rounded-full ${status.id === viewing.id ? 'bg-white' : 'bg-white/40'}`} />)}
+          </div>
+          <header className="absolute inset-x-3 top-6 z-10 flex items-center gap-3 sm:inset-x-6">
+            <UserAvatar name={viewing.name} image={viewing.image} />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">{viewing.name}</span>
+            {viewing.userId === currentUser.id && <Button type="button" variant="ghost" size="icon" className="text-white hover:bg-white/15" onClick={() => void removeStatus()} aria-label={t.chat.deleteStatus}><Trash2 /></Button>}
+            <Button type="button" variant="ghost" size="icon" className="text-white hover:bg-white/15" onClick={() => setViewing(null)} aria-label={t.chat.back}><X /></Button>
+          </header>
+          <Button type="button" variant="ghost" size="icon" className="absolute start-2 z-10 text-white hover:bg-white/15" onClick={() => moveStatus(-1)} aria-label={t.chat.previousStatus}><ArrowLeft className="rtl:rotate-180" /></Button>
+          <div className="flex max-h-full w-full max-w-2xl flex-col items-center justify-center gap-4 pt-16">
+            {viewing.mediaPath && viewUrl && (
+              viewing.mediaType?.startsWith('video/')
+                ? <video src={viewUrl} controls autoPlay playsInline className="max-h-[70dvh] max-w-full rounded-xl" />
+                : <img src={viewUrl} alt={viewing.mediaName ?? t.chat.statusTitle} className="max-h-[70dvh] max-w-full rounded-xl object-contain" />
+            )}
+            {viewing.body && <p dir="auto" className="max-w-xl whitespace-pre-wrap text-center text-lg">{viewing.body}</p>}
+            <time className="text-xs text-white/70">{new Date(viewing.createdAt).toLocaleString()}</time>
+          </div>
+          <Button type="button" variant="ghost" size="icon" className="absolute end-2 z-10 text-white hover:bg-white/15" onClick={() => moveStatus(1)} aria-label={t.chat.nextStatus}><ArrowRight className="rtl:rotate-180" /></Button>
+        </div>
+      )}
+    </>
+  )
+}

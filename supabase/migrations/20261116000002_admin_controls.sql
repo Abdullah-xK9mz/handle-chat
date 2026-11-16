@@ -225,4 +225,14 @@ BEGIN
         SELECT count(*) FROM public.conversation_members cm WHERE cm."conversationId" = c.id
       ) < 2)
       OR (c.kind = 'group' AND NOT EXISTS (
-        SELECT 1 FROM public.conversation_members cm WHERE cm."conve
+        SELECT 1 FROM public.conversation_members cm WHERE cm."conversationId" = c.id
+      ))
+  LOOP
+    PERFORM public.chat_delete_conversation(p_actor_id, v_conversation_id);
+    v_deleted := v_deleted + 1;
+  END LOOP;
+  RETURN v_deleted;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.chat_cleanup_orphan_conversations(uuid) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.chat_cleanup_orphan_conversations(uuid) TO service_role;
