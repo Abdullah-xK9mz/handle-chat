@@ -12,7 +12,7 @@ const publicBasePath =
     : ''
 
 export const metadata: Metadata = {
-  title: 'Handle — Chat by username',
+  title: 'Message — Chat by username',
   description:
     'A private messaging app where people find each other by username, not phone number.',
   generator: 'v0.app',

@@ -1,6 +1,6 @@
 import { AuthForm } from '@/components/auth-form'
 
-export const metadata = { title: 'Create account — Handle' }
+export const metadata = { title: 'Create account — Message' }
 
 export default function SignUpPage() {
   return <AuthForm mode="sign-up" />

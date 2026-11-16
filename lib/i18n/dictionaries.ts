@@ -12,7 +12,7 @@ export function localeDir(locale: Locale) {
 }
 
 const en = {
-  appName: 'Handle',
+  appName: 'Message',
   language: {
     label: 'Language',
     switchTo: 'العربية',
@@ -20,7 +20,7 @@ const en = {
     current: 'English',
   },
   auth: {
-    signUpTitle: 'Claim your handle',
+    signUpTitle: 'Choose a username',
     signInTitle: 'Welcome back',
     signUpSubtitle:
       'Pick a username. Friends find you by it — no phone number needed.',
@@ -35,7 +35,7 @@ const en = {
     creatingAccount: 'Creating account…',
     signIn: 'Sign in',
     signingIn: 'Signing in…',
-    haveAccount: 'Already have a handle?',
+    haveAccount: 'Already have an account?',
     newHere: 'New here?',
     createAnAccount: 'Create an account',
     invalidUsername:
@@ -224,7 +224,7 @@ const en = {
     languageSection: 'Language',
     languageHint: 'Choose the language used across the app.',
     account: 'Account',
-    accountHint: 'Sign out of Handle on this device.',
+    accountHint: 'Sign out of Message on this device.',
     notifications: 'Notifications',
     notificationsHint: 'Show a browser notification when a new message arrives. The site must be open.',
     enableNotifications: 'Enable notifications',
@@ -233,7 +233,7 @@ const en = {
     qrTitle: 'Your chat QR code',
     qrHint: 'Scan this code to open a chat with you.',
     scanQr: 'Scan a QR code',
-    scanQrHint: 'Point your camera at someone’s Handle QR code.',
+    scanQrHint: 'Point your camera at another user’s Message QR code.',
     startScanner: 'Open camera',
     stopScanner: 'Stop camera',
     scannerUnsupported: 'Camera scanning is unavailable here. Enter a username instead.',
@@ -276,7 +276,7 @@ const en = {
 export type Dictionary = typeof en
 
 const ar: Dictionary = {
-  appName: 'هاندل',
+  appName: 'Message',
   language: {
     label: 'اللغة',
     switchTo: 'English',
@@ -484,7 +484,7 @@ const ar: Dictionary = {
     languageSection: 'اللغة',
     languageHint: 'اختر لغة واجهة التطبيق.',
     account: 'الحساب',
-    accountHint: 'تسجيل الخروج من هاندل على هذا الجهاز.',
+    accountHint: 'تسجيل الخروج من Message على هذا الجهاز.',
     notifications: 'الإشعارات',
     notificationsHint: 'اعرض إشعارًا من المتصفح عند وصول رسالة جديدة. يجب أن يكون الموقع مفتوحًا.',
     enableNotifications: 'تفعيل الإشعارات',
@@ -493,7 +493,7 @@ const ar: Dictionary = {
     qrTitle: 'رمز QR الخاص بك',
     qrHint: 'امسح الرمز لفتح محادثة معك.',
     scanQr: 'مسح رمز QR',
-    scanQrHint: 'وجّه الكاميرا إلى رمز Handle لشخص آخر.',
+    scanQrHint: 'وجّه الكاميرا إلى رمز QR الخاص بمستخدم آخر في Message.',
     startScanner: 'فتح الكاميرا',
     stopScanner: 'إيقاف الكاميرا',
     scannerUnsupported: 'مسح الكاميرا غير متاح هنا. أدخل اسم المستخدم بدلًا من ذلك.',
