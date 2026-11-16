@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   CalendarPlus,
   FileText,
@@ -74,6 +74,17 @@ export function MessageComposer({
   const streamRef = useRef<MediaStream | null>(null)
   const chunksRef = useRef<BlobPart[]>([])
   const canSend = (value.trim().length > 0 || file !== null) && !pending
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('[data-attachment-menu], [data-attachment-menu-trigger]')) return
+      setMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', dismiss)
+    return () => document.removeEventListener('pointerdown', dismiss)
+  }, [menuOpen])
 
   function resize() {
     const el = textareaRef.current
@@ -214,7 +225,7 @@ export function MessageComposer({
   const activeError = localError ?? error
 
   return (
-    <div className="border-t bg-background px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-4">
+    <div className="chat-composer border-t bg-background px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-4">
       {activeError && <p role="alert" className="mx-auto mb-2 max-w-3xl text-xs text-destructive">{activeError}</p>}
       {uploadingMedia && <p className="mx-auto mb-2 max-w-3xl text-xs text-muted-foreground" role="status">{t.chat.uploadingMedia}</p>}
       {recording && <p className="mx-auto mb-2 max-w-3xl animate-pulse text-xs text-destructive" role="status">● {t.chat.recording}</p>}
@@ -228,14 +239,14 @@ export function MessageComposer({
         </div>
       )}
       <form className="mx-auto flex max-w-3xl items-end gap-2" onSubmit={(event) => { event.preventDefault(); void submit() }}>
-        <input ref={mediaRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime,audio/webm,audio/ogg,audio/mp4,audio/mpeg,audio/wav" className="sr-only" tabIndex={-1} onChange={(event) => { handleFile(event.target.files?.[0] ?? null); event.target.value = '' }} />
+        <input ref={mediaRef} type="file" accept="image/*,video/*,audio/*" className="sr-only" tabIndex={-1} onChange={(event) => { handleFile(event.target.files?.[0] ?? null); event.target.value = '' }} />
         <input ref={documentRef} type="file" accept=".pdf,.txt,.csv,.doc,.docx,.xls,.xlsx,.ppt,.pptx,application/pdf,text/plain,text/csv,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation" className="sr-only" tabIndex={-1} onChange={(event) => { handleFile(event.target.files?.[0] ?? null); event.target.value = '' }} />
         <div className="relative shrink-0">
-          <Button type="button" variant="outline" size="icon-lg" disabled={pending || recording} className="size-10 rounded-full" aria-label={t.chat.attachmentMenu} title={t.chat.attachmentMenu} onClick={() => setMenuOpen((open) => !open)}><Plus /></Button>
+          <Button type="button" variant="outline" size="icon-lg" disabled={pending || recording} className="size-10 rounded-full" aria-label={t.chat.attachmentMenu} title={t.chat.attachmentMenu} data-attachment-menu-trigger onClick={() => setMenuOpen((open) => !open)}><Plus /></Button>
           {menuOpen && (
-            <div className="absolute bottom-full start-0 z-20 mb-2 grid min-w-52 gap-1 rounded-xl border bg-popover p-2 shadow-xl">
-              <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => mediaRef.current?.click()}><ImagePlus className="size-4" />{t.chat.attachMedia}</button>
-              <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => documentRef.current?.click()}><FileText className="size-4" />{t.chat.document}</button>
+            <div data-attachment-menu className="absolute bottom-full start-0 z-20 mb-2 grid min-w-52 gap-1 rounded-xl border bg-popover p-2 shadow-xl">
+              <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setMenuOpen(false); mediaRef.current?.click() }}><ImagePlus className="size-4" />{t.chat.attachMedia}</button>
+              <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setMenuOpen(false); documentRef.current?.click() }}><FileText className="size-4" />{t.chat.document}</button>
               <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => void shareLocation()}><MapPin className="size-4" />{t.chat.location}</button>
               <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setDialogType('contact'); setMenuOpen(false) }}><UserRound className="size-4" />{t.chat.contact}</button>
               <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setDialogType('poll'); setMenuOpen(false) }}><ListPlus className="size-4" />{t.chat.poll}</button>
@@ -305,3 +316,4 @@ export function MessageComposer({
     </div>
   )
 }
+

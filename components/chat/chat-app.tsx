@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import useSWR from 'swr'
+import useSWR, { preload } from 'swr'
 import { MessageCircle } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
 import { cn } from '@/lib/utils'
@@ -27,6 +27,28 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   const conversations = data?.conversations ?? []
   const active = conversations.find((c) => c.id === activeId) ?? null
   const seenMessagesRef = useRef<Map<number, string> | null>(null)
+
+  useEffect(() => {
+    const viewport = window.visualViewport
+    const updateViewport = () => {
+      const height = viewport?.height ?? window.innerHeight
+      document.documentElement.style.setProperty('--chat-viewport-height', `${height}px`)
+      document.documentElement.style.setProperty('--chat-viewport-top', `${viewport?.offsetTop ?? 0}px`)
+      document.documentElement.dataset.chatKeyboardOpen = window.innerHeight - height > 120 ? 'true' : 'false'
+    }
+    updateViewport()
+    viewport?.addEventListener('resize', updateViewport)
+    viewport?.addEventListener('scroll', updateViewport)
+    window.addEventListener('resize', updateViewport)
+    return () => {
+      viewport?.removeEventListener('resize', updateViewport)
+      viewport?.removeEventListener('scroll', updateViewport)
+      window.removeEventListener('resize', updateViewport)
+      document.documentElement.style.removeProperty('--chat-viewport-height')
+      document.documentElement.style.removeProperty('--chat-viewport-top')
+      delete document.documentElement.dataset.chatKeyboardOpen
+    }
+  }, [])
 
   useEffect(() => {
     if (deepLinkHandled.current) return
@@ -107,9 +129,13 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   }, [conversations, currentUser.id, data, t.chat])
 
   function openConversation(id: number) {
+    prefetchConversation(id)
     setActiveId(id)
     window.history.pushState({ handleChatConversation: id }, '', window.location.href)
-    mutate()
+  }
+
+  function prefetchConversation(id: number) {
+    void preload(`/api/conversations/${id}/messages`, fetcher)
   }
 
   function changeSection(next: SidebarSection) {
@@ -129,8 +155,8 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   }
 
   return (
-    <div className="h-dvh w-screen overflow-hidden bg-background">
-      <div className="mx-auto flex h-dvh w-full max-w-none overflow-hidden bg-background">
+    <div className="fixed inset-x-0 z-10 w-screen overflow-hidden bg-background" style={{ top: 'var(--chat-viewport-top, 0px)', height: 'var(--chat-viewport-height, 100dvh)' }}>
+      <div className="mx-auto flex h-full w-full max-w-none overflow-hidden bg-background">
         <aside
           className={cn(
             'w-full flex-col border-e md:flex md:w-80 lg:w-96',
@@ -144,6 +170,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
             error={error}
             activeId={activeId}
             onSelect={openConversation}
+            onPrefetch={prefetchConversation}
             onDeleteConversation={(id) => void deleteConversation(id)}
             section={section}
             onSectionChange={changeSection}
@@ -166,6 +193,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
               fallbackName={active?.otherName}
               fallbackUsername={active?.otherUsername ?? undefined}
               fallbackImage={active?.otherImage ?? undefined}
+              fallbackBlockedByOther={active?.otherBlockedMe}
               onBack={() => window.history.back()}
               onActivity={() => mutate()}
               availableConversations={conversations}

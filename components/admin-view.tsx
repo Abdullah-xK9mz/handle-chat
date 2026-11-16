@@ -59,16 +59,26 @@ type AdminMessage = {
   pinned: boolean
 }
 
+type AdminMessageRequest = {
+  conversationId: number
+  requesterId: string
+  status: 'pending'
+  createdAt: string
+  requester: { id: string; username: string; name: string; image: string | null } | null
+}
+
 type Props = { currentUserId: string }
 
 export function AdminView({ currentUserId }: Props) {
   const { t, locale } = useI18n()
-  const [section, setSection] = useState<'users' | 'conversations' | 'reports'>('users')
+  const [section, setSection] = useState<'users' | 'conversations' | 'requests' | 'reports'>('users')
   const [users, setUsers] = useState<AdminUser[]>([])
   const [userQuery, setUserQuery] = useState('')
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null)
   const [draft, setDraft] = useState({ name: '', username: '', image: '', about: '', password: '' })
   const [conversations, setConversations] = useState<AdminConversation[]>([])
+  const [messageRequests, setMessageRequests] = useState<AdminMessageRequest[]>([])
+  const [selectedRequestId, setSelectedRequestId] = useState<number | null>(null)
   const [selectedConversation, setSelectedConversation] = useState<number | null>(null)
   const [messages, setMessages] = useState<AdminMessage[]>([])
   const [devices, setDevices] = useState<AdminDevice[]>([])
@@ -83,6 +93,7 @@ export function AdminView({ currentUserId }: Props) {
 
   const selectedUser = users.find((user) => user.id === selectedUserId) ?? null
   const selectedReport = reports.find((report) => report.id === selectedReportId) ?? null
+  const selectedRequest = messageRequests.find((request) => request.conversationId === selectedRequestId) ?? null
   const filteredUsers = useMemo(() => {
     const query = userQuery.trim().replace(/^@/, '').toLocaleLowerCase()
     if (!query) return users
@@ -111,11 +122,13 @@ export function AdminView({ currentUserId }: Props) {
       edgeRequest<{ users: AdminUser[] }>({ action: 'admin-list-users' }),
       edgeRequest<{ conversations: AdminConversation[] }>({ action: 'admin-list-conversations' }),
       edgeRequest<{ reports: AdminReport[] }>({ action: 'admin-list-reports' }),
-    ]).then(([userResult, conversationResult, reportResult]) => {
+      edgeRequest<{ requests: AdminMessageRequest[] }>({ action: 'admin-list-message-requests' }),
+    ]).then(([userResult, conversationResult, reportResult, requestResult]) => {
       if (cancelled) return
       setUsers(userResult.users)
       setConversations(conversationResult.conversations)
       setReports(reportResult.reports)
+      setMessageRequests(requestResult.requests)
     }).catch(() => {
       if (!cancelled) setError(t.errors.GENERIC)
     }).finally(() => {
@@ -123,6 +136,16 @@ export function AdminView({ currentUserId }: Props) {
     })
     return () => { cancelled = true }
   }, [t.errors.GENERIC])
+
+  useEffect(() => {
+    if (section !== 'requests') return
+    let cancelled = false
+    const refresh = () => edgeRequest<{ requests: AdminMessageRequest[] }>({ action: 'admin-list-message-requests' })
+      .then((result) => { if (!cancelled) setMessageRequests(result.requests) })
+      .catch(() => undefined)
+    const timer = window.setInterval(() => { void refresh() }, 5000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [section])
 
   useEffect(() => {
     if (!selectedUserId) { setDevices([]); return }
@@ -189,6 +212,35 @@ export function AdminView({ currentUserId }: Props) {
     } catch {
       setMessages([])
       setError(t.errors.GENERIC)
+    }
+  }
+
+  async function selectMessageRequest(request: AdminMessageRequest) {
+    setSelectedRequestId(request.conversationId)
+    setMessages([])
+    setError(null)
+    try {
+      const result = await edgeRequest<{ messages: AdminMessage[] }>({ action: 'admin-get-messages', conversationId: request.conversationId })
+      setMessages(result.messages)
+    } catch {
+      setError(t.errors.GENERIC)
+    }
+  }
+
+  async function decideMessageRequest(request: AdminMessageRequest, status: 'accepted' | 'declined') {
+    setSaving(true)
+    setError(null)
+    try {
+      await edgeRequest({ action: 'admin-set-message-request', conversationId: request.conversationId, status })
+      setMessageRequests((current) => current.filter((item) => item.conversationId !== request.conversationId))
+      setSelectedRequestId(null)
+      setMessages([])
+      if (status === 'accepted') await loadConversations()
+      setNotice(t.admin.saved)
+    } catch {
+      setError(t.errors.GENERIC)
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -280,10 +332,10 @@ export function AdminView({ currentUserId }: Props) {
           <span className="hidden text-xs text-muted-foreground sm:inline">{currentUserId.slice(0, 8)}</span>
         </header>
 
-        <nav className="grid grid-cols-3 gap-2 border-b p-3 sm:px-6">
-          {(['users', 'conversations', 'reports'] as const).map((tab) => (
+        <nav className="grid grid-cols-4 gap-2 border-b p-3 sm:px-6">
+          {(['users', 'conversations', 'requests', 'reports'] as const).map((tab) => (
             <button key={tab} type="button" onClick={() => setSection(tab)} className={`rounded-xl px-3 py-2.5 text-sm font-medium transition-colors ${section === tab ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'}`}>
-              {t.admin[tab]}
+              {tab === 'requests' ? t.admin.messageRequests : t.admin[tab]}
             </button>
           ))}
         </nav>
@@ -373,6 +425,30 @@ export function AdminView({ currentUserId }: Props) {
                     {!message.deletedAt && <div className="flex shrink-0 gap-1"><button type="button" className="rounded-lg px-2 py-1 text-xs text-primary hover:bg-primary/10" onClick={() => void changeMessage(message, 'pin-message')}>{message.pinned ? t.admin.unpinMessage : t.admin.pinMessage}</button><button type="button" className="rounded-lg px-2 py-1 text-xs text-destructive hover:bg-destructive/10" onClick={() => void changeMessage(message, 'delete-message')}>{t.admin.deleteMessage}</button></div>}
                   </li>)}
                 </ol>
+              )}
+            </section>
+          </div>
+        ) : section === 'requests' ? (
+          <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(250px,0.8fr)_minmax(0,1.5fr)]">
+            <aside className="max-h-64 overflow-y-auto border-b p-2 md:max-h-none md:border-b-0 md:border-e">
+              {messageRequests.length === 0 ? <p className="p-4 text-sm text-muted-foreground">{t.admin.noMessageRequests}</p> : messageRequests.map((request) => (
+                <button key={request.conversationId} type="button" onClick={() => void selectMessageRequest(request)} className={`mb-1 flex w-full items-center gap-3 rounded-xl p-3 text-start hover:bg-muted ${selectedRequestId === request.conversationId ? 'bg-accent' : ''}`}>
+                  <UserAvatar name={request.requester?.name ?? request.requesterId} image={request.requester?.image ?? null} className="size-10" />
+                  <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{request.requester?.name || t.admin.requestFrom}</span><span className="block truncate text-xs text-muted-foreground" dir="ltr">@{request.requester?.username || request.requesterId.slice(0, 8)}</span><span className="text-xs text-muted-foreground">{new Date(request.createdAt).toLocaleDateString(locale)}</span></span>
+                </button>
+              ))}
+            </aside>
+            <section className="min-h-0 overflow-y-auto p-3 sm:p-5">
+              {!selectedRequest ? <p className="py-10 text-center text-sm text-muted-foreground">{t.admin.noMessageRequests}</p> : (
+                <div className="mx-auto grid max-w-3xl gap-4">
+                  <div className="flex flex-wrap items-center gap-3 rounded-xl border p-4">
+                    <UserAvatar name={selectedRequest.requester?.name ?? selectedRequest.requesterId} image={selectedRequest.requester?.image ?? null} />
+                    <div className="min-w-0 flex-1"><p className="font-semibold">{t.admin.requestFrom} {selectedRequest.requester?.name || selectedRequest.requesterId.slice(0, 8)}</p><p className="text-xs text-muted-foreground" dir="ltr">@{selectedRequest.requester?.username || selectedRequest.requesterId}</p></div>
+                    <Button type="button" disabled={saving} onClick={() => void decideMessageRequest(selectedRequest, 'accepted')}>{t.admin.acceptRequest}</Button>
+                    <Button type="button" variant="secondary" disabled={saving} onClick={() => void decideMessageRequest(selectedRequest, 'declined')}>{t.admin.declineRequest}</Button>
+                  </div>
+                  {messages.length === 0 ? <p className="py-8 text-center text-sm text-muted-foreground">{t.admin.noMessages}</p> : <ol className="flex flex-col gap-2">{messages.map((message) => <li key={message.id} className="rounded-xl border bg-card p-3"><p className="mb-1 text-[11px] text-muted-foreground" dir="ltr">{message.senderId === selectedRequest.requesterId ? selectedRequest.requester?.name || message.senderId.slice(0, 8) : t.admin.title} · {new Date(message.createdAt).toLocaleString(locale)}</p><p className="break-words text-sm">{message.deletedAt ? t.chat.deletedMessage : message.body || message.mediaName || message.messageType}</p></li>)}</ol>}
+                </div>
               )}
             </section>
           </div>

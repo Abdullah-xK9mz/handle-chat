@@ -19,6 +19,9 @@ export type ConversationSummary = {
   otherUsername: string | null
   otherName: string
   otherImage: string | null
+  otherAbout?: string | null
+  otherBlockedMe?: boolean
+  messageRequestStatus?: 'pending' | 'accepted' | 'declined' | null
   lastBody: string | null
   lastMediaType: string | null
   lastMessageType: string | null
@@ -58,6 +61,7 @@ export type ConversationDetail = {
     participantCount?: number
     members?: Array<{ id: string; name: string; username: string; image: string | null }>
     isBlockedByMe?: boolean
+    isBlockedByOther?: boolean
     isBlocked?: boolean
   } | null
   conversation?: {
@@ -66,6 +70,7 @@ export type ConversationDetail = {
     name: string | null
     participantCount: number
     isMuted: boolean
+    messageRequestStatus?: 'pending' | 'accepted' | 'declined' | null
   }
   otherLastReadAt: string | null
   otherLastDeliveredAt?: string | null

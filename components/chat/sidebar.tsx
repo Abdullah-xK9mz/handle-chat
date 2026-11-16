@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { BellOff, CircleDashed, MessageSquareText, MoreHorizontal, Settings, Shield, Trash2, Users } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/components/i18n-provider'
 import { LanguageToggle } from '@/components/language-toggle'
 import { buttonVariants } from '@/components/ui/button'
@@ -25,6 +25,7 @@ type SidebarProps = {
   error: unknown
   activeId: number | null
   onSelect: (id: number) => void
+  onPrefetch: (id: number) => void
   onDeleteConversation: (id: number) => void
   section: SidebarSection
   onSectionChange: (section: SidebarSection) => void
@@ -37,6 +38,7 @@ export function Sidebar({
   error,
   activeId,
   onSelect,
+  onPrefetch,
   onDeleteConversation,
   section,
   onSectionChange,
@@ -46,6 +48,17 @@ export function Sidebar({
   const holdTimer = useRef<number | null>(null)
   const longPressTriggered = useRef(false)
   const visibleConversations = conversations.filter((conversation) => section === 'groups' ? conversation.isGroup : !conversation.isGroup)
+
+  useEffect(() => {
+    if (openActionsId === null) return
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('[data-conversation-actions], [data-conversation-actions-trigger]')) return
+      setOpenActionsId(null)
+    }
+    document.addEventListener('pointerdown', dismiss)
+    return () => document.removeEventListener('pointerdown', dismiss)
+  }, [openActionsId])
 
   function startHold(id: number) {
     longPressTriggered.current = false
@@ -145,7 +158,11 @@ export function Sidebar({
                   : c.lastMediaType?.startsWith('image/')
                     ? t.chat.photoMessage
                     : t.chat.noMessagesYet
-              const preview = c.lastSenderId === currentUser.id && c.lastSenderId
+              const preview = c.messageRequestStatus === 'pending'
+                ? t.chat.messageRequestPending
+                : c.messageRequestStatus === 'declined'
+                  ? t.chat.messageRequestDeclined
+                  : c.lastSenderId === currentUser.id && c.lastSenderId
                 ? `${t.chat.youPrefix}${messagePreview}`
                 : messagePreview
               return (
@@ -156,7 +173,7 @@ export function Sidebar({
                     event.preventDefault()
                     setOpenActionsId(c.id)
                   }}
-                  onTouchStart={() => startHold(c.id)}
+                  onTouchStart={() => { startHold(c.id); onPrefetch(c.id) }}
                   onTouchEnd={clearHold}
                   onTouchMove={clearHold}
                 >
@@ -170,6 +187,8 @@ export function Sidebar({
                       setOpenActionsId(null)
                       onSelect(c.id)
                     }}
+                    onMouseEnter={() => onPrefetch(c.id)}
+                    onFocus={() => onPrefetch(c.id)}
                     aria-current={isActive ? 'true' : undefined}
                     className={cn(
                       'flex w-full items-center gap-3 rounded-xl p-3 pe-11 text-start transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
@@ -225,11 +244,12 @@ export function Sidebar({
                       event.stopPropagation()
                       setOpenActionsId((open) => open === c.id ? null : c.id)
                     }}
+                    data-conversation-actions-trigger
                   >
                     <MoreHorizontal className="size-4" />
                   </button>
                   {openActionsId === c.id && (
-                    <div className="absolute end-2 top-12 z-30 min-w-48 rounded-xl border bg-popover p-1.5 text-popover-foreground shadow-xl" onClick={(event) => event.stopPropagation()}>
+                    <div data-conversation-actions className="absolute end-2 top-12 z-30 min-w-48 rounded-xl border bg-popover p-1.5 text-popover-foreground shadow-xl" onClick={(event) => event.stopPropagation()}>
                       <button
                         type="button"
                         className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs text-destructive hover:bg-destructive/10"

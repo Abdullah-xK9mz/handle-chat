@@ -79,6 +79,8 @@ async function rpc(name: string, args: Record<string, unknown>) {
       "NAME_REQUIRED",
       "NAME_TOO_LONG",
       "USER_BLOCKED",
+      "MESSAGE_REQUEST_PENDING",
+      "MESSAGE_REQUEST_DECLINED",
       "INVALID_GROUP_NAME",
       "INVALID_GROUP_MEMBERS",
       "INVALID_MESSAGE_TYPE",
@@ -592,6 +594,40 @@ async function handle(request: Request) {
           reportedUser: report.reported_user_id ? byId.get(String(report.reported_user_id)) ?? null : null,
         })) });
       }
+      case "admin-list-message-requests": {
+        await requireAdmin(user.id);
+        const requestResponse = await serviceRequest(
+          `/rest/v1/conversation_requests?select=conversation_id,requester_id,status,created_at&admin_id=eq.${encodeURIComponent(user.id)}&status=eq.pending&order=created_at.desc&limit=200`,
+        );
+        if (!requestResponse.ok) throw new ChatError("GENERIC", 500);
+        const requests = await requestResponse.json() as Array<Record<string, unknown>>;
+        const requesterIds = [...new Set(requests.map((item) => String(item.requester_id)))];
+        const profilesResponse = requesterIds.length
+          ? await serviceRequest(`/rest/v1/profiles?select=id,username,name,image&id=in.(${requesterIds.join(",")})`)
+          : null;
+        if (profilesResponse && !profilesResponse.ok) throw new ChatError("GENERIC", 500);
+        const profiles = profilesResponse ? await profilesResponse.json() as Array<Record<string, unknown>> : [];
+        const byId = new Map(profiles.map((profile) => [String(profile.id), profile]));
+        return json({ requests: requests.map((item) => ({
+          conversationId: Number(item.conversation_id),
+          requesterId: String(item.requester_id),
+          status: item.status,
+          createdAt: item.created_at,
+          requester: byId.get(String(item.requester_id)) ?? null,
+        })) });
+      }
+      case "admin-set-message-request": {
+        await requireAdmin(user.id);
+        const conversationId = validConversationId(body.conversationId);
+        const status = body.status;
+        if (status !== "accepted" && status !== "declined") throw new ChatError("INVALID_MESSAGE", 400);
+        await rpc("chat_admin_set_message_request", {
+          p_actor_id: user.id,
+          p_conversation_id: conversationId,
+          p_status: status,
+        });
+        return json({ ok: true });
+      }
       case "admin-set-report-status": {
         await requireAdmin(user.id);
         const reportId = validMessageId(body.reportId);
@@ -623,6 +659,12 @@ async function handle(request: Request) {
         return json({ messages: (messages as Array<Record<string, unknown>>).map((message) => ({ ...message, pinned: pinned.has(Number(message.id)) })) });
       }
       case "admin-delete-conversation":
+      {
+        await requireAdmin(user.id);
+        const conversationId = validConversationId(body.conversationId);
+        await rpc("chat_admin_delete_conversation", { p_actor_id: user.id, p_conversation_id: conversationId });
+        return json({ ok: true });
+      }
       case "delete-conversation": {
         const conversationId = validConversationId(body.conversationId);
         await rpc("chat_delete_conversation", { p_user_id: user.id, p_conversation_id: conversationId });
@@ -666,11 +708,23 @@ async function handle(request: Request) {
       }
       case "get-messages": {
         const conversationId = validConversationId(body.conversationId);
-        const detail = await rpc("chat_get_messages", {
-          p_conversation_id: conversationId,
-          p_user_id: user.id,
-        });
+        const [detail, blockState] = await Promise.all([
+          rpc("chat_get_messages", { p_conversation_id: conversationId, p_user_id: user.id }),
+          rpc("chat_get_block_state", { p_conversation_id: conversationId, p_user_id: user.id }),
+        ]);
         if (!detail) throw new ChatError("NOT_FOUND", 404);
+        if (detail.other && blockState) {
+          detail.other.isBlockedByMe = blockState.isBlockedByMe === true;
+          detail.other.isBlockedByOther = blockState.isBlockedByOther === true;
+          detail.other.isBlocked = detail.other.isBlockedByMe || detail.other.isBlockedByOther;
+          if (detail.other.isBlockedByOther) {
+            detail.other.image = null;
+            detail.other.about = null;
+          }
+          if (detail.conversation) {
+            detail.conversation.messageRequestStatus = blockState.messageRequestStatus ?? null;
+          }
+        }
         return json(detail);
       }
       case "send-message": {
@@ -681,6 +735,7 @@ async function handle(request: Request) {
         if (body.body.trim().length > 4000) {
           throw new ChatError("MESSAGE_TOO_LONG", 400);
         }
+        await rpc("chat_assert_send_allowed", { p_conversation_id: conversationId, p_user_id: user.id });
         const message = await rpc("chat_send_message", {
           p_conversation_id: conversationId,
           p_user_id: user.id,
@@ -691,6 +746,7 @@ async function handle(request: Request) {
       }
       case "send-media": {
         const conversationId = validConversationId(body.conversationId);
+        await rpc("chat_assert_send_allowed", { p_conversation_id: conversationId, p_user_id: user.id });
         const mediaPath = typeof body.mediaPath === "string" ? body.mediaPath : "";
         const mediaType = typeof body.mediaType === "string" ? body.mediaType : "";
         const mediaName = typeof body.mediaName === "string" ? body.mediaName : "";
@@ -775,6 +831,7 @@ async function handle(request: Request) {
       }
       case "send-structured-message": {
         const conversationId = validConversationId(body.conversationId);
+        await rpc("chat_assert_send_allowed", { p_conversation_id: conversationId, p_user_id: user.id });
         const messageType = typeof body.messageType === "string" ? body.messageType : "";
         const payload = body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)
           ? body.payload
@@ -813,10 +870,12 @@ async function handle(request: Request) {
         return json({ ok: true });
       }
       case "forward-message": {
+        const targetConversationId = validConversationId(body.targetConversationId);
+        await rpc("chat_assert_send_allowed", { p_conversation_id: targetConversationId, p_user_id: user.id });
         const message = await rpc("chat_forward_message", {
           p_user_id: user.id,
           p_message_id: validMessageId(body.messageId),
-          p_target_conversation_id: validConversationId(body.targetConversationId),
+          p_target_conversation_id: targetConversationId,
         });
         return json({ message });
       }

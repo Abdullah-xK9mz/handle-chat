@@ -48,6 +48,7 @@ type ConversationViewProps = {
   fallbackName?: string
   fallbackUsername?: string
   fallbackImage?: string
+  fallbackBlockedByOther?: boolean
   onBack: () => void
   onActivity: () => void
   availableConversations: ConversationSummary[]
@@ -61,6 +62,7 @@ export function ConversationView({
   fallbackName,
   fallbackUsername,
   fallbackImage,
+  fallbackBlockedByOther = false,
   onBack,
   onActivity,
   availableConversations,
@@ -85,6 +87,7 @@ export function ConversationView({
   const [openMessageActions, setOpenMessageActions] = useState<number | null>(null)
   const [messageMenuAbove, setMessageMenuAbove] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
   const loadingMediaRef = useRef(new Set<string>())
   const holdTimer = useRef<number | null>(null)
   const longPressTriggered = useRef(false)
@@ -94,11 +97,13 @@ export function ConversationView({
   const name =
     data?.other?.name ?? fallbackName ?? t.chat.conversationFallback
   const username = data?.other?.username ?? fallbackUsername
-  const image = data?.other?.image ?? fallbackImage
-  const isGroup = data?.other?.isGroup ?? false
-  const isBlocked = data?.other?.isBlocked ?? false
   const isBlockedByMe = data?.other?.isBlockedByMe ?? false
+  const isBlockedByOther = data?.other?.isBlockedByOther ?? fallbackBlockedByOther
+  const image = isBlockedByOther ? null : data?.other ? data.other.image : fallbackImage
+  const isGroup = data?.other?.isGroup ?? false
+  const isBlocked = data?.other?.isBlocked ?? (isBlockedByMe || isBlockedByOther)
   const isMuted = data?.conversation?.isMuted ?? false
+  const messageRequestStatus = data?.conversation?.messageRequestStatus
   const otherReadAt = data?.otherLastReadAt
     ? new Date(data.otherLastReadAt).getTime()
     : 0
@@ -189,8 +194,56 @@ export function ConversationView({
   }
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: 'end' })
+    const container = messagesContainerRef.current
+    if (container) container.scrollTop = container.scrollHeight
   }, [lastId])
+
+  useEffect(() => {
+    const viewport = window.visualViewport
+    let frame = 0
+    const keepLatestVisible = () => {
+      const container = messagesContainerRef.current
+      const nearBottom = container && container.scrollHeight - container.scrollTop - container.clientHeight < 180
+      const composing = document.activeElement?.id === 'message'
+      if (!nearBottom && !composing) return
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const latest = messagesContainerRef.current
+          if (latest) latest.scrollTop = latest.scrollHeight
+        })
+      })
+    }
+    viewport?.addEventListener('resize', keepLatestVisible)
+    viewport?.addEventListener('scroll', keepLatestVisible)
+    return () => {
+      cancelAnimationFrame(frame)
+      viewport?.removeEventListener('resize', keepLatestVisible)
+      viewport?.removeEventListener('scroll', keepLatestVisible)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (openMessageActions === null) return
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('[data-message-action-menu], [data-message-action-trigger]')) return
+      setOpenMessageActions(null)
+    }
+    document.addEventListener('pointerdown', dismiss)
+    return () => document.removeEventListener('pointerdown', dismiss)
+  }, [openMessageActions])
+
+  useEffect(() => {
+    if (!reportMenuOpen) return
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('[data-report-menu], [data-report-menu-trigger]')) return
+      setReportMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', dismiss)
+    return () => document.removeEventListener('pointerdown', dismiss)
+  }, [reportMenuOpen])
 
   useEffect(() => {
     for (const mediaPath of new Set(
@@ -362,11 +415,11 @@ export function ConversationView({
             </Button>
           )}
           <div className="relative">
-            <Button variant="ghost" size="icon" onClick={() => setReportMenuOpen((open) => !open)} aria-label={t.chat.reportOptions} title={t.chat.reportOptions}>
+            <Button variant="ghost" size="icon" data-report-menu-trigger onClick={() => setReportMenuOpen((open) => !open)} aria-label={t.chat.reportOptions} title={t.chat.reportOptions}>
               <Flag />
             </Button>
             {reportMenuOpen && (
-              <div className="absolute end-0 top-full z-20 mt-1 min-w-48 rounded-xl border bg-popover p-1 shadow-lg">
+              <div data-report-menu className="absolute end-0 top-full z-20 mt-1 min-w-48 rounded-xl border bg-popover p-1 shadow-lg">
                 {!isGroup && otherUserId && <button type="button" className="w-full rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => void reportChat('person')}>{t.chat.reportPerson}</button>}
                 <button type="button" className="w-full rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => void reportChat('conversation')}>{t.chat.reportConversation}</button>
               </div>
@@ -404,9 +457,12 @@ export function ConversationView({
 
       {isBlocked && !isGroup && (
         <div className="border-b bg-destructive/5 px-4 py-2 text-center text-xs text-destructive">
-          {t.chat.blockedNotice}
+          {isBlockedByOther && !isBlockedByMe ? t.chat.blockedYouNotice : t.chat.blockedByYouNotice}
         </div>
       )}
+
+      {!isGroup && messageRequestStatus === 'pending' && <p role="status" className="border-b bg-primary/5 px-4 py-2 text-center text-xs text-muted-foreground">{t.chat.messageRequestPending}</p>}
+      {!isGroup && messageRequestStatus === 'declined' && <p role="status" className="border-b bg-destructive/5 px-4 py-2 text-center text-xs text-destructive">{t.chat.messageRequestDeclined}</p>}
 
       {data?.pinnedMessage && (
         <button type="button" className="flex w-full items-center gap-2 border-b bg-primary/5 px-4 py-2 text-start text-xs hover:bg-primary/10" onClick={() => document.getElementById(`message-${data.pinnedMessage?.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>
@@ -418,6 +474,7 @@ export function ConversationView({
       {actionNotice && <p role="status" className="border-b bg-background px-4 py-1.5 text-center text-xs text-muted-foreground">{actionNotice}</p>}
 
       <div
+        ref={messagesContainerRef}
         className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-8"
         role="log"
         aria-live="polite"
@@ -512,6 +569,7 @@ export function ConversationView({
                             className="absolute end-1 top-1 hidden size-6 items-center justify-center rounded-full bg-background/70 text-muted-foreground hover:bg-background focus-visible:flex md:flex"
                             aria-label={t.chat.messageActions}
                             title={t.chat.messageActions}
+                            data-message-action-trigger
                             onClick={() => {
                               if (openMessageActions === message.id) setOpenMessageActions(null)
                               else showMessageActions(message.id)
@@ -520,7 +578,7 @@ export function ConversationView({
                             <MoreHorizontal className="size-4" />
                           </button>
                           {openMessageActions === message.id && (
-                            <div className={cn('absolute end-1 z-30 grid max-h-[60dvh] min-w-48 gap-0.5 overflow-y-auto rounded-xl border bg-popover p-1.5 text-popover-foreground shadow-xl', messageMenuAbove ? 'bottom-full mb-2' : 'top-8')}>
+                            <div data-message-action-menu className={cn('fixed inset-x-3 bottom-[calc(5rem+env(safe-area-inset-bottom))] z-50 grid max-h-[min(60dvh,22rem)] gap-0.5 overflow-y-auto rounded-xl border bg-popover p-1.5 text-popover-foreground shadow-xl md:absolute md:inset-x-auto md:end-1 md:min-w-48', messageMenuAbove ? 'md:bottom-full md:mb-2' : 'md:top-8')}>
                               <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setReply(message); setOpenMessageActions(null) }}><Reply className="size-3.5" />{t.chat.reply}</button>
                               <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { void copyMessage(message); setOpenMessageActions(null) }}><Copy className="size-3.5" />{t.chat.copyMessage}</button>
                               <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setForwarding(message); setOpenMessageActions(null) }}><Forward className="size-3.5" />{t.chat.forwardMessage}</button>
@@ -627,7 +685,10 @@ export function ConversationView({
                       ) : message.body ? (
                         <p
                           dir="auto"
-                          className="text-sm leading-relaxed break-words whitespace-pre-wrap"
+                          data-message-action-trigger
+                          className="select-none text-sm leading-relaxed break-words whitespace-pre-wrap md:select-text"
+                          onCopy={(event) => { if (window.matchMedia('(pointer: coarse)').matches) event.preventDefault() }}
+                          onClick={() => { if (window.matchMedia('(pointer: coarse)').matches && !message.deletedAt && !message.pending) showMessageActions(message.id) }}
                         >
                           {message.body}
                         </p>
@@ -670,8 +731,10 @@ export function ConversationView({
 
       {isBlocked && !isGroup ? (
         <div className="border-t bg-background px-4 py-4 text-center text-sm text-muted-foreground">
-          {t.chat.blockedNotice}
+          {isBlockedByOther && !isBlockedByMe ? t.chat.blockedYouNotice : t.chat.blockedByYouNotice}
         </div>
+      ) : messageRequestStatus === 'declined' ? (
+        <div className="border-t bg-background px-4 py-4 text-center text-sm text-muted-foreground">{t.chat.messageRequestDeclined}</div>
       ) : (
         <MessageComposer
           onSend={handleSend}
