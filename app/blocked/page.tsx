@@ -43,11 +43,9 @@ export default function AccessBlockedPage() {
         <Button className="mt-6 w-full" disabled={signingOut} onClick={() => void leaveAccount()}>
           {signingOut ? '…' : t.blocked.signOut}
         </Button>
-        {type === 'account' && (
-          <Link className="mt-4 inline-block text-sm text-primary underline-offset-4 hover:underline" href="/sign-up">
-            {t.blocked.createAccount}
-          </Link>
-        )}
+        <Link className="mt-4 inline-block text-sm text-primary underline-offset-4 hover:underline" href="/sign-up">
+          {t.blocked.createAccount}
+        </Link>
       </section>
     </main>
   )
