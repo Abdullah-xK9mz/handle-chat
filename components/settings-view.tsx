@@ -87,6 +87,10 @@ export function SettingsView({
       return
     }
     if (typeof Notification === 'undefined') {
+      setError(t.settings.notificationsUnavailable)
+      return
+    }
+    if (Notification.permission === 'denied') {
       setError(t.settings.notificationsDenied)
       return
     }
@@ -266,7 +270,7 @@ export function SettingsView({
           <input
             ref={photoRef}
             type="file"
-            accept="image/jpeg,image/png,image/webp"
+            accept="image/*"
             className="sr-only"
             tabIndex={-1}
             aria-label={t.settings.photo}

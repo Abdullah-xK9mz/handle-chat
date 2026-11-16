@@ -243,7 +243,8 @@ const en = {
     about: 'About',
     aboutHint: 'Share what you are up to, such as working, sleeping or away.',
     aboutPlaceholder: 'Available, at work, sleeping…',
-    notificationsDenied: 'Notifications are blocked in your browser settings.',
+    notificationsDenied: 'Notifications were not allowed. Enable them in the app or site settings, then try again.',
+    notificationsUnavailable: 'This app view cannot request notifications. Open the site in Chrome or use an app build with native notification support.',
   },
   admin: {
     title: 'Admin panel', users: 'Accounts', conversations: 'Conversations',
@@ -503,7 +504,8 @@ const ar: Dictionary = {
     about: 'حول',
     aboutHint: 'أخبر الآخرين بحالتك، مثل: في العمل أو نائم أو غير متاح.',
     aboutPlaceholder: 'متاح، في العمل، نائم…',
-    notificationsDenied: 'الإشعارات محظورة في إعدادات المتصفح.',
+    notificationsDenied: 'لم يُمنح إذن الإشعارات. فعّله من إعدادات التطبيق أو الموقع ثم حاول مرة أخرى.',
+    notificationsUnavailable: 'لا يمكن طلب إذن الإشعارات من داخل هذه النسخة. افتح الموقع في Chrome أو استخدم نسخة تطبيق تدعم الإشعارات الأصلية.',
   },
   admin: {
     title: 'لوحة الإدارة', users: 'الحسابات', conversations: 'المحادثات',
