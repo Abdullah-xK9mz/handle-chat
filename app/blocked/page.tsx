@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import { ShieldAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/components/i18n-provider'
-import { signOut } from '@/lib/supabase'
+import { appPath, signOut } from '@/lib/supabase'
 
 export default function AccessBlockedPage() {
   const { t, locale } = useI18n()
@@ -22,7 +22,7 @@ export default function AccessBlockedPage() {
   async function leaveAccount() {
     setSigningOut(true)
     await signOut()
-    window.location.replace('/sign-in')
+    window.location.replace(appPath('/sign-in'))
   }
 
   return (

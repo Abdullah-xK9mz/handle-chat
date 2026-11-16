@@ -11,6 +11,9 @@ const basePath =
 const nextConfig = {
   output: 'export',
   basePath,
+  env: {
+    NEXT_PUBLIC_BASE_PATH: basePath,
+  },
   trailingSlash: true,
   images: {
     unoptimized: true,
@@ -18,3 +21,4 @@ const nextConfig = {
 }
 
 export default nextConfig
+

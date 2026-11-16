@@ -7,6 +7,12 @@ export const SUPABASE_PUBLISHABLE_KEY =
 const FUNCTION_URL = `${SUPABASE_URL}/functions/v1/handle-chat`
 const SESSION_KEY = 'handle.supabase.session.v1'
 const DEVICE_KEY = 'handle.device.installation.v2'
+const APP_BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? ''
+
+export function appPath(path: string) {
+  const suffix = path.startsWith('/') ? path : `/${path}`
+  return `${APP_BASE_PATH}${suffix}`
+}
 const MAX_MEDIA_SIZE = 50 * 1024 * 1024
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024
 
@@ -74,13 +80,14 @@ function getDeviceId() {
 }
 
 function isAuthPage(pathname: string) {
-  return pathname === '/sign-in' || pathname === '/sign-up'
+  const normalized = pathname.replace(/\/+$/, '') || '/'
+  return [appPath('/sign-in'), appPath('/sign-up')].some((path) => normalized === path)
 }
 
 function redirectToSignIn() {
   if (typeof window === 'undefined') return
   localStorage.removeItem(SESSION_KEY)
-  if (!isAuthPage(window.location.pathname)) window.location.replace('/sign-in')
+  if (!isAuthPage(window.location.pathname)) window.location.replace(appPath('/sign-in'))
 }
 
 function redirectToRestriction(result: Record<string, unknown>) {
@@ -88,7 +95,7 @@ function redirectToRestriction(result: Record<string, unknown>) {
   const type = result.error === 'DEVICE_BANNED' ? 'device' : 'account'
   const query = new URLSearchParams({ type })
   if (typeof result.expiresAt === 'string') query.set('expiresAt', result.expiresAt)
-  window.location.replace(`/blocked?${query.toString()}`)
+  window.location.replace(appPath(`/blocked?${query.toString()}`))
 }
 
 function readSession(): Session | null {
