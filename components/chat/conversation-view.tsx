@@ -90,7 +90,6 @@ export function ConversationView({
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const loadingMediaRef = useRef(new Set<string>())
   const holdTimer = useRef<number | null>(null)
-  const longPressTriggered = useRef(false)
 
   const messages = data?.messages ?? []
   const lastId = messages.at(-1)?.id
@@ -112,10 +111,8 @@ export function ConversationView({
     : 0
 
   function startMessageHold(id: number) {
-    longPressTriggered.current = false
     if (holdTimer.current !== null) window.clearTimeout(holdTimer.current)
     holdTimer.current = window.setTimeout(() => {
-      longPressTriggered.current = true
       showMessageActions(id)
     }, 500)
   }
@@ -685,10 +682,7 @@ export function ConversationView({
                       ) : message.body ? (
                         <p
                           dir="auto"
-                          data-message-action-trigger
-                          className="select-none text-sm leading-relaxed break-words whitespace-pre-wrap md:select-text"
-                          onCopy={(event) => { if (window.matchMedia('(pointer: coarse)').matches) event.preventDefault() }}
-                          onClick={() => { if (window.matchMedia('(pointer: coarse)').matches && !message.deletedAt && !message.pending) showMessageActions(message.id) }}
+                          className="select-none text-sm leading-relaxed break-words whitespace-pre-wrap"
                         >
                           {message.body}
                         </p>

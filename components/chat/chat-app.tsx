@@ -51,6 +51,16 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   }, [])
 
   useEffect(() => {
+    const preventPageCopy = (event: ClipboardEvent) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('input, textarea, [contenteditable="true"]')) return
+      event.preventDefault()
+    }
+    document.addEventListener('copy', preventPageCopy, true)
+    return () => document.removeEventListener('copy', preventPageCopy, true)
+  }, [])
+
+  useEffect(() => {
     if (deepLinkHandled.current) return
     deepLinkHandled.current = true
     const username = new URLSearchParams(window.location.search).get('chat')

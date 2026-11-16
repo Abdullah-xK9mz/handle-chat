@@ -76,6 +76,14 @@
   * {
     @apply border-border outline-ring/50;
   }
+  html, body, body * {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  input, textarea, [contenteditable="true"] {
+    -webkit-user-select: text;
+    user-select: text;
+  }
   body {
     @apply bg-background font-sans text-foreground;
   }
