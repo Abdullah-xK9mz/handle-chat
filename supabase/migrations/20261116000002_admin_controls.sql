@@ -236,3 +236,4 @@ END;
 $$;
 REVOKE ALL ON FUNCTION public.chat_cleanup_orphan_conversations(uuid) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.chat_cleanup_orphan_conversations(uuid) TO service_role;
+

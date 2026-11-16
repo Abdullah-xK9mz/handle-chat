@@ -83,3 +83,4 @@ END;
 $$;
 REVOKE EXECUTE ON FUNCTION public.chat_update_profile(uuid,text,text,boolean,text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.chat_update_profile(uuid,text,text,boolean,text) TO service_role;
+

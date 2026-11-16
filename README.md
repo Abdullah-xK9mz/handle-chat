@@ -24,3 +24,4 @@ https://supabase.com/dashboard/project/nvujfvmnquiiirytxnwr
 المفتاح الموجود في ملفات المتصفح مفتاح نشر عام. المفتاح الخاص موجود داخل Supabase فقط ولا ترفعه على GitHub.
 
 GitHub Pages يستضيف الموقع. Supabase يحفظ الحسابات والرسائل؛ GitHub وحده لا يشغّل قاعدة بيانات أو خادم محادثة.
+

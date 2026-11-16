@@ -52,3 +52,4 @@ GRANT USAGE, SELECT ON SEQUENCE
   public.conversations_id_seq,
   public.messages_id_seq
 TO service_role;
+

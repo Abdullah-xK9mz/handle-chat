@@ -6,6 +6,7 @@ export const SUPABASE_PUBLISHABLE_KEY =
 
 const FUNCTION_URL = `${SUPABASE_URL}/functions/v1/handle-chat`
 const SESSION_KEY = 'handle.supabase.session.v1'
+const DEVICE_KEY = 'handle.device.installation.v1'
 const MAX_MEDIA_SIZE = 50 * 1024 * 1024
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024
 
@@ -56,9 +57,38 @@ export class SupabaseError extends Error {
   constructor(
     public code: string,
     public status = 400,
+    public details: Record<string, unknown> = {},
   ) {
     super(code)
   }
+}
+
+function getDeviceId() {
+  const existing = localStorage.getItem(DEVICE_KEY)
+  if (existing && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(existing)) {
+    return existing
+  }
+  const id = crypto.randomUUID()
+  localStorage.setItem(DEVICE_KEY, id)
+  return id
+}
+
+function isAuthPage(pathname: string) {
+  return pathname === '/sign-in' || pathname === '/sign-up'
+}
+
+function redirectToSignIn() {
+  if (typeof window === 'undefined') return
+  localStorage.removeItem(SESSION_KEY)
+  if (!isAuthPage(window.location.pathname)) window.location.replace('/sign-in')
+}
+
+function redirectToRestriction(result: Record<string, unknown>) {
+  if (typeof window === 'undefined') return
+  const type = result.error === 'DEVICE_BANNED' ? 'device' : 'account'
+  const query = new URLSearchParams({ type })
+  if (typeof result.expiresAt === 'string') query.set('expiresAt', result.expiresAt)
+  window.location.replace(`/blocked?${query.toString()}`)
 }
 
 function readSession(): Session | null {
@@ -170,6 +200,7 @@ export async function createAccount(
     headers: {
       apikey: SUPABASE_PUBLISHABLE_KEY,
       'Content-Type': 'application/json',
+      'x-device-id': getDeviceId(),
     },
     body: JSON.stringify({
       action: 'sign-up',
@@ -180,6 +211,9 @@ export async function createAccount(
   })
   const result = await response.json().catch(() => null)
   if (!response.ok) {
+    if (result?.error === 'DEVICE_BANNED' || result?.error === 'ACCOUNT_BANNED') {
+      redirectToRestriction(result)
+    }
     throw new SupabaseError(result?.error ?? 'SIGN_UP_FAILED', response.status)
   }
   await passwordSignIn(username, password)
@@ -207,12 +241,14 @@ export async function signOut() {
 export async function edgeRequest<T>(payload: Record<string, unknown>): Promise<T> {
   const session = payload.action === 'sign-up' ? null : await getSession()
   if (payload.action !== 'sign-up' && !session) {
+    redirectToSignIn()
     throw new SupabaseError('UNAUTHORIZED', 401)
   }
 
   const headers: Record<string, string> = {
     apikey: SUPABASE_PUBLISHABLE_KEY,
     'Content-Type': 'application/json',
+    'x-device-id': getDeviceId(),
   }
   if (session) headers.Authorization = `Bearer ${session.access_token}`
 
@@ -223,7 +259,13 @@ export async function edgeRequest<T>(payload: Record<string, unknown>): Promise<
   })
   const result = await response.json().catch(() => null)
   if (!response.ok) {
-    throw new SupabaseError(result?.error ?? 'GENERIC', response.status)
+    const code = result?.error ?? 'GENERIC'
+    if (code === 'DEVICE_BANNED' || code === 'ACCOUNT_BANNED') {
+      redirectToRestriction(result)
+    } else if (response.status === 401) {
+      redirectToSignIn()
+    }
+    throw new SupabaseError(code, response.status, result ?? {})
   }
   return result as T
 }
@@ -448,3 +490,4 @@ export async function chatRequest<T>(
 
   return edgeRequest<T>(payload)
 }
+

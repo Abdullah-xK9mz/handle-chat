@@ -33,3 +33,4 @@ export default function AdminPage() {
     {failed ? <><p>تعذّر فتح لوحة الإدارة.</p><Button onClick={() => window.location.reload()}>إعادة المحاولة</Button></> : 'جارٍ التحقق من صلاحية الإدارة…'}
   </main>
 }
+

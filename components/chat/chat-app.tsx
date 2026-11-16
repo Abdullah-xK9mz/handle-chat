@@ -188,3 +188,4 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
     </div>
   )
 }
+

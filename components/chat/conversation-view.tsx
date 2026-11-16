@@ -12,6 +12,7 @@ import {
   Clock,
   Copy,
   Forward,
+  Flag,
   MoreHorizontal,
   Pin,
   Reply,
@@ -80,6 +81,7 @@ export function ConversationView({
   const [forwarding, setForwarding] = useState<ChatMessage | null>(null)
   const [forwardTargetId, setForwardTargetId] = useState<number | ''>('')
   const [actionNotice, setActionNotice] = useState<string | null>(null)
+  const [reportMenuOpen, setReportMenuOpen] = useState(false)
   const [openMessageActions, setOpenMessageActions] = useState<number | null>(null)
   const [messageMenuAbove, setMessageMenuAbove] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -165,6 +167,24 @@ export function ConversationView({
       onActivity()
     } catch {
       setSendError(t.errors.GENERIC)
+    }
+  }
+
+  async function reportChat(target: 'person' | 'conversation') {
+    const details = window.prompt(t.chat.reportReason)
+    setReportMenuOpen(false)
+    if (details === null) return
+    try {
+      await edgeRequest({
+        action: 'submit-report',
+        ...(target === 'person' && otherUserId ? { reportedUserId: otherUserId } : {}),
+        conversationId,
+        details,
+      })
+      setActionNotice(t.chat.reportSubmitted)
+    } catch (err) {
+      const code = typeof err === 'object' && err && 'code' in err ? String(err.code) : 'GENERIC'
+      setSendError(errorMessage(t, code))
     }
   }
 
@@ -341,6 +361,17 @@ export function ConversationView({
               {isBlockedByMe ? <ShieldCheck /> : <Ban />}
             </Button>
           )}
+          <div className="relative">
+            <Button variant="ghost" size="icon" onClick={() => setReportMenuOpen((open) => !open)} aria-label={t.chat.reportOptions} title={t.chat.reportOptions}>
+              <Flag />
+            </Button>
+            {reportMenuOpen && (
+              <div className="absolute end-0 top-full z-20 mt-1 min-w-48 rounded-xl border bg-popover p-1 shadow-lg">
+                {!isGroup && otherUserId && <button type="button" className="w-full rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => void reportChat('person')}>{t.chat.reportPerson}</button>}
+                <button type="button" className="w-full rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => void reportChat('conversation')}>{t.chat.reportConversation}</button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -687,3 +718,4 @@ export function ConversationView({
     </>
   )
 }
+

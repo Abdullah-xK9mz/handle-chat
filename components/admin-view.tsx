@@ -16,6 +16,27 @@ type AdminUser = {
   image: string | null
   about: string
   role: 'user' | 'admin'
+  accountBan?: { expiresAt: string | null; reason: string } | null
+}
+
+type AdminDevice = {
+  device_id: string
+  last_seen_at: string
+  user_agent: string | null
+  blockedAt: string | null
+  blockReason: string | null
+}
+
+type AdminReport = {
+  id: number
+  reporter_id: string | null
+  reported_user_id: string | null
+  conversation_id: number | null
+  details: string
+  status: 'open' | 'reviewed' | 'dismissed'
+  created_at: string
+  reporter: { username: string; name: string } | null
+  reportedUser: { username: string; name: string } | null
 }
 
 type AdminConversation = {
@@ -42,7 +63,7 @@ type Props = { currentUserId: string }
 
 export function AdminView({ currentUserId }: Props) {
   const { t, locale } = useI18n()
-  const [section, setSection] = useState<'users' | 'conversations'>('users')
+  const [section, setSection] = useState<'users' | 'conversations' | 'reports'>('users')
   const [users, setUsers] = useState<AdminUser[]>([])
   const [userQuery, setUserQuery] = useState('')
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null)
@@ -50,12 +71,18 @@ export function AdminView({ currentUserId }: Props) {
   const [conversations, setConversations] = useState<AdminConversation[]>([])
   const [selectedConversation, setSelectedConversation] = useState<number | null>(null)
   const [messages, setMessages] = useState<AdminMessage[]>([])
+  const [devices, setDevices] = useState<AdminDevice[]>([])
+  const [banDuration, setBanDuration] = useState('24')
+  const [banReason, setBanReason] = useState('')
+  const [reports, setReports] = useState<AdminReport[]>([])
+  const [selectedReportId, setSelectedReportId] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
   const selectedUser = users.find((user) => user.id === selectedUserId) ?? null
+  const selectedReport = reports.find((report) => report.id === selectedReportId) ?? null
   const filteredUsers = useMemo(() => {
     const query = userQuery.trim().replace(/^@/, '').toLocaleLowerCase()
     if (!query) return users
@@ -73,15 +100,22 @@ export function AdminView({ currentUserId }: Props) {
     setConversations(result.conversations)
   }
 
+  async function loadReports() {
+    const result = await edgeRequest<{ reports: AdminReport[] }>({ action: 'admin-list-reports' })
+    setReports(result.reports)
+  }
+
   useEffect(() => {
     let cancelled = false
     Promise.all([
       edgeRequest<{ users: AdminUser[] }>({ action: 'admin-list-users' }),
       edgeRequest<{ conversations: AdminConversation[] }>({ action: 'admin-list-conversations' }),
-    ]).then(([userResult, conversationResult]) => {
+      edgeRequest<{ reports: AdminReport[] }>({ action: 'admin-list-reports' }),
+    ]).then(([userResult, conversationResult, reportResult]) => {
       if (cancelled) return
       setUsers(userResult.users)
       setConversations(conversationResult.conversations)
+      setReports(reportResult.reports)
     }).catch(() => {
       if (!cancelled) setError(t.errors.GENERIC)
     }).finally(() => {
@@ -89,6 +123,15 @@ export function AdminView({ currentUserId }: Props) {
     })
     return () => { cancelled = true }
   }, [t.errors.GENERIC])
+
+  useEffect(() => {
+    if (!selectedUserId) { setDevices([]); return }
+    let cancelled = false
+    edgeRequest<{ devices: AdminDevice[] }>({ action: 'admin-list-devices', userId: selectedUserId })
+      .then((result) => { if (!cancelled) setDevices(result.devices) })
+      .catch(() => { if (!cancelled) setDevices([]) })
+    return () => { cancelled = true }
+  }, [selectedUserId])
 
   function selectUser(user: AdminUser) {
     setSelectedUserId(user.id)
@@ -171,6 +214,60 @@ export function AdminView({ currentUserId }: Props) {
     }
   }
 
+  async function setAccountBan(blocked: boolean) {
+    if (!selectedUser) return
+    setSaving(true)
+    setError(null)
+    try {
+      if (blocked) {
+        await edgeRequest({ action: 'admin-set-account-ban', userId: selectedUser.id, duration: banDuration, reason: banReason })
+      } else {
+        await edgeRequest({ action: 'admin-clear-account-ban', userId: selectedUser.id })
+      }
+      await loadUsers()
+      setNotice(t.admin.saved)
+    } catch {
+      setError(t.errors.GENERIC)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function setDeviceBan(device: AdminDevice) {
+    if (!selectedUserId) return
+    const blocked = !device.blockedAt
+    if (blocked && !window.confirm(t.admin.deviceBlockConfirm)) return
+    try {
+      await edgeRequest({ action: 'admin-set-device-ban', deviceId: device.device_id, blocked })
+      const result = await edgeRequest<{ devices: AdminDevice[] }>({ action: 'admin-list-devices', userId: selectedUserId })
+      setDevices(result.devices)
+    } catch {
+      setError(t.errors.GENERIC)
+    }
+  }
+
+  async function selectReport(report: AdminReport) {
+    setSelectedReportId(report.id)
+    setSelectedConversation(report.conversation_id)
+    setMessages([])
+    if (report.conversation_id === null) return
+    try {
+      const result = await edgeRequest<{ messages: AdminMessage[] }>({ action: 'admin-get-messages', conversationId: report.conversation_id })
+      setMessages(result.messages)
+    } catch {
+      setError(t.errors.GENERIC)
+    }
+  }
+
+  async function updateReportStatus(report: AdminReport, status: 'reviewed' | 'dismissed') {
+    try {
+      await edgeRequest({ action: 'admin-set-report-status', reportId: report.id, status })
+      setReports((current) => current.map((item) => item.id === report.id ? { ...item, status } : item))
+    } catch {
+      setError(t.errors.GENERIC)
+    }
+  }
+
   return (
     <main className="min-h-dvh bg-canvas p-3 sm:p-6">
       <div className="mx-auto flex min-h-[calc(100dvh-1.5rem)] max-w-7xl flex-col overflow-hidden rounded-2xl border bg-background shadow-xl sm:min-h-[calc(100dvh-3rem)]">
@@ -183,8 +280,8 @@ export function AdminView({ currentUserId }: Props) {
           <span className="hidden text-xs text-muted-foreground sm:inline">{currentUserId.slice(0, 8)}</span>
         </header>
 
-        <nav className="grid grid-cols-2 gap-2 border-b p-3 sm:px-6">
-          {(['users', 'conversations'] as const).map((tab) => (
+        <nav className="grid grid-cols-3 gap-2 border-b p-3 sm:px-6">
+          {(['users', 'conversations', 'reports'] as const).map((tab) => (
             <button key={tab} type="button" onClick={() => setSection(tab)} className={`rounded-xl px-3 py-2.5 text-sm font-medium transition-colors ${section === tab ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'}`}>
               {t.admin[tab]}
             </button>
@@ -223,11 +320,41 @@ export function AdminView({ currentUserId }: Props) {
                     <Button type="submit" disabled={saving}>{saving ? t.admin.saving : t.admin.save}</Button>
                     <Button type="button" variant="destructive" disabled={saving || selectedUser.id === currentUserId} onClick={() => void deleteUser(selectedUser)}><Trash2 className="me-2 size-4" />{t.admin.deleteAccount}</Button>
                   </div>
+                  <p className="text-xs text-muted-foreground">{t.admin.deleteAccountHint}</p>
+                  <div className="grid gap-3 rounded-xl border p-4">
+                    <h2 className="font-semibold">{t.admin.banAccount}</h2>
+                    {selectedUser.accountBan ? (
+                      <>
+                        <p className="text-sm text-destructive">{t.admin.banActive}{selectedUser.accountBan.expiresAt ? ` · ${t.admin.banUntil} ${new Date(selectedUser.accountBan.expiresAt).toLocaleString(locale)}` : ''}</p>
+                        <p className="text-sm text-muted-foreground">{selectedUser.accountBan.reason}</p>
+                        <Button type="button" variant="secondary" disabled={saving} onClick={() => void setAccountBan(false)}>{t.admin.liftBan}</Button>
+                      </>
+                    ) : (
+                      <>
+                        <label className="grid gap-1.5 text-sm">{t.admin.banDuration}<select className="h-10 rounded-lg border bg-background px-3" value={banDuration} onChange={(event) => setBanDuration(event.target.value)}><option value="1">{t.admin.banOneHour}</option><option value="24">{t.admin.banOneDay}</option><option value="168">{t.admin.banSevenDays}</option><option value="720">{t.admin.banThirtyDays}</option><option value="until_lifted">{t.admin.banUntilLifted}</option></select></label>
+                        <label className="grid gap-1.5 text-sm">{t.admin.banReason}<Input maxLength={200} placeholder={t.admin.banReasonPlaceholder} value={banReason} onChange={(event) => setBanReason(event.target.value)} /></label>
+                        <Button type="button" variant="secondary" disabled={saving} onClick={() => void setAccountBan(true)}>{t.admin.applyBan}</Button>
+                      </>
+                    )}
+                  </div>
+                  <div className="grid gap-3 rounded-xl border p-4">
+                    <h2 className="font-semibold">{t.admin.devices}</h2>
+                    {devices.length === 0 ? <p className="text-sm text-muted-foreground">{t.admin.noDevices}</p> : devices.map((device) => (
+                      <div key={device.device_id} className="flex flex-wrap items-center gap-2 border-t pt-3">
+                        <div className="min-w-0 flex-1" title={device.device_id}>
+                          <p className="truncate text-sm">{device.user_agent || device.device_id.slice(0, 8)}</p>
+                          <p className="text-xs text-muted-foreground">{t.admin.deviceSeen}: {new Date(device.last_seen_at).toLocaleString(locale)}</p>
+                          <p className={`text-xs ${device.blockedAt ? 'text-destructive' : 'text-muted-foreground'}`}>{device.blockedAt ? t.admin.blockedDevice : t.admin.activeDevice}</p>
+                        </div>
+                        <Button type="button" size="sm" variant={device.blockedAt ? 'secondary' : 'destructive'} onClick={() => void setDeviceBan(device)}>{device.blockedAt ? t.admin.unblockDevice : t.admin.blockDevice}</Button>
+                      </div>
+                    ))}
+                  </div>
                 </form>
               )}
             </section>
           </div>
-        ) : (
+        ) : section === 'conversations' ? (
           <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(250px,0.8fr)_minmax(0,1.5fr)]">
             <aside className="max-h-64 overflow-y-auto border-b p-2 md:max-h-none md:border-b-0 md:border-e">
               {conversations.map((conversation) => <div key={conversation.id} className={`mb-1 flex items-center gap-1 rounded-xl p-2 ${selectedConversation === conversation.id ? 'bg-accent' : 'hover:bg-muted'}`}>
@@ -249,8 +376,45 @@ export function AdminView({ currentUserId }: Props) {
               )}
             </section>
           </div>
+        ) : (
+          <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(260px,0.8fr)_minmax(0,1.5fr)]">
+            <aside className="max-h-64 overflow-y-auto border-b p-2 md:max-h-none md:border-b-0 md:border-e">
+              {reports.length === 0 ? <p className="p-4 text-sm text-muted-foreground">{t.admin.noReports}</p> : reports.map((report) => (
+                <button key={report.id} type="button" onClick={() => void selectReport(report)} className={`mb-1 w-full rounded-xl p-3 text-start hover:bg-muted ${selectedReportId === report.id ? 'bg-accent' : ''}`}>
+                  <span className="block truncate text-sm font-medium">{report.reportedUser?.name || (report.conversation_id ? `${t.admin.reportConversation} #${report.conversation_id}` : t.admin.reportPerson)}</span>
+                  <span className="block truncate text-xs text-muted-foreground">{t.admin.reportBy}: {report.reporter?.name || report.reporter?.username || '—'} · {new Date(report.created_at).toLocaleDateString(locale)}</span>
+                  <span className="text-xs text-primary">{report.status === 'open' ? t.admin.reportOpen : report.status === 'reviewed' ? t.admin.reportReviewed : t.admin.reportDismissed}</span>
+                </button>
+              ))}
+            </aside>
+            <section className="min-h-0 overflow-y-auto p-4 sm:p-6">
+              {!selectedReport ? <p className="py-10 text-center text-sm text-muted-foreground">{t.admin.noReports}</p> : (
+                <div className="mx-auto grid max-w-3xl gap-4">
+                  <div className="rounded-xl border p-4">
+                    <p className="text-xs text-muted-foreground">{t.admin.reportBy}: {selectedReport.reporter?.name || selectedReport.reporter?.username || '—'}</p>
+                    <p className="mt-1 text-sm">{t.admin.reportPerson}: {selectedReport.reportedUser?.name || selectedReport.reportedUser?.username || '—'}</p>
+                    {selectedReport.conversation_id && <p className="text-sm">{t.admin.reportConversation}: #{selectedReport.conversation_id}</p>}
+                    <p className="mt-3 text-xs font-semibold text-muted-foreground">{t.admin.reportReason}</p>
+                    <p className="whitespace-pre-wrap text-sm">{selectedReport.details}</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {selectedReport.status !== 'reviewed' && <Button type="button" size="sm" onClick={() => void updateReportStatus(selectedReport, 'reviewed')}>{t.admin.markReviewed}</Button>}
+                      {selectedReport.status !== 'dismissed' && <Button type="button" size="sm" variant="secondary" onClick={() => void updateReportStatus(selectedReport, 'dismissed')}>{t.admin.dismissReport}</Button>}
+                    </div>
+                  </div>
+                  {selectedReport.conversation_id !== null && (
+                    messages.length === 0 ? <p className="text-center text-sm text-muted-foreground">{t.admin.noMessages}</p> : (
+                      <ol className="flex flex-col gap-2">
+                        {messages.map((message) => <li key={message.id} className="rounded-xl border bg-card p-3"><p className="mb-1 text-[11px] text-muted-foreground" dir="ltr">{message.senderId.slice(0, 8)} · {new Date(message.createdAt).toLocaleString(locale)}</p><p className="break-words text-sm">{message.deletedAt ? t.chat.deletedMessage : message.body || message.mediaName || message.messageType}</p></li>)}
+                      </ol>
+                    )
+                  )}
+                </div>
+              )}
+            </section>
+          </div>
         )}
       </div>
     </main>
   )
 }
+

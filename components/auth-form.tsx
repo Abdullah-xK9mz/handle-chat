@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { AtSign, LockKeyhole, MessageCircle, UserRound } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { createAccount, getSession, signInWithUsername, SupabaseError } from '@/lib/supabase'
+import { createAccount, edgeRequest, getSession, signInWithUsername, SupabaseError } from '@/lib/supabase'
 import { USERNAME_PATTERN, normalizeUsername } from '@/lib/username'
 import { useI18n } from './i18n-provider'
 import { LanguageToggle } from './language-toggle'
@@ -21,8 +21,14 @@ export function AuthForm({ mode }: { mode: Mode }) {
 
   useEffect(() => {
     let cancelled = false
-    void getSession().then((session) => {
+    void getSession().then(async (session) => {
       if (cancelled || !session) return
+      try {
+        await edgeRequest({ action: 'me' })
+      } catch {
+        return
+      }
+      if (cancelled) return
       const pendingChat = localStorage.getItem('handle.pending.deepLink.v1')
       localStorage.removeItem('handle.pending.deepLink.v1')
       router.replace(pendingChat ? `/?chat=${encodeURIComponent(pendingChat)}` : '/')
@@ -130,3 +136,4 @@ export function AuthForm({ mode }: { mode: Mode }) {
     </main>
   )
 }
+

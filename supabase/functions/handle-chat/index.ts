@@ -6,7 +6,7 @@ const USERNAME_PATTERN = /^[a-z0-9_.]{3,20}$/;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-client-info",
+  "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-client-info, x-device-id",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Content-Type": "application/json; charset=utf-8",
 };
@@ -15,6 +15,7 @@ class ChatError extends Error {
   constructor(
     public code: string,
     public status = 400,
+    public details: Record<string, unknown> = {},
   ) {
     super(code);
   }
@@ -264,6 +265,58 @@ async function requireAdmin(userId: string) {
   if (profiles?.[0]?.role !== "admin") throw new ChatError("ADMIN_REQUIRED", 403);
 }
 
+function normalizeDeviceId(raw: unknown) {
+  const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+    ? value
+    : null;
+}
+
+function requestDeviceId(request: Request) {
+  return normalizeDeviceId(request.headers.get("x-device-id"));
+}
+
+async function assertDeviceAllowed(deviceId: string) {
+  const response = await serviceRequest(
+    `/rest/v1/device_bans?select=reason,created_at&device_id=eq.${encodeURIComponent(deviceId)}&limit=1`,
+  );
+  if (!response.ok) throw new ChatError("GENERIC", 500);
+  const ban = (await response.json())?.[0];
+  if (ban) throw new ChatError("DEVICE_BANNED", 403, { reason: ban.reason });
+}
+
+async function recordDevice(request: Request, deviceId: string | null, userId: string) {
+  if (!deviceId) return;
+  const userAgent = (request.headers.get("user-agent") ?? "").slice(0, 512);
+  const response = await serviceRequest(
+    "/rest/v1/device_registry?on_conflict=device_id",
+    {
+      method: "POST",
+      headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({
+        device_id: deviceId,
+        user_id: userId,
+        last_seen_at: new Date().toISOString(),
+        user_agent: userAgent,
+      }),
+    },
+  );
+  if (!response.ok) throw new ChatError("GENERIC", 500);
+}
+
+async function activeAccountBan(userId: string) {
+  const response = await serviceRequest(
+    `/rest/v1/account_bans?select=expires_at,reason&user_id=eq.${encodeURIComponent(userId)}&limit=1`,
+  );
+  if (!response.ok) throw new ChatError("GENERIC", 500);
+  const ban = (await response.json())?.[0] as
+    | { expires_at: string | null; reason: string }
+    | undefined;
+  if (!ban) return null;
+  if (ban.expires_at && Date.parse(ban.expires_at) <= Date.now()) return null;
+  return { expiresAt: ban.expires_at, reason: ban.reason };
+}
+
 async function adminAuthUser(userId: string, method: "PATCH" | "DELETE", body?: Record<string, unknown>) {
   const response = await serviceRequest(
     `/auth/v1/admin/users/${encodeURIComponent(userId)}`,
@@ -292,7 +345,10 @@ async function handle(request: Request) {
     const body = await request.json().catch(() => {
       throw new ChatError("GENERIC", 400);
     });
+    const deviceId = requestDeviceId(request);
+    if (!deviceId) throw new ChatError("DEVICE_ID_REQUIRED", 400);
     if (body?.action === "sign-up") {
+      if (deviceId) await assertDeviceAllowed(deviceId);
       const ipAddress =
         request.headers.get("cf-connecting-ip") ??
         request.headers.get("x-real-ip") ??
@@ -306,6 +362,12 @@ async function handle(request: Request) {
     }
 
     const user = await authenticate(request);
+    await assertDeviceAllowed(deviceId);
+    if (body?.action === "me") await recordDevice(request, deviceId, user.id);
+    const accountBan = await activeAccountBan(user.id);
+    if (accountBan) {
+      throw new ChatError("ACCOUNT_BANNED", 403, accountBan);
+    }
     switch (body?.action) {
       case "me": {
         const profile = await rpc("chat_get_profile", { p_user_id: user.id });
@@ -314,11 +376,23 @@ async function handle(request: Request) {
       }
       case "admin-list-users": {
         await requireAdmin(user.id);
-        const response = await serviceRequest(
+        const [response, bansResponse] = await Promise.all([
+          serviceRequest(
           "/rest/v1/profiles?select=id,username,name,image,about,role,created_at&order=username.asc&limit=1000",
+          ),
+          serviceRequest("/rest/v1/account_bans?select=user_id,expires_at,reason&limit=1000"),
+        ]);
+        if (!response.ok || !bansResponse.ok) throw new ChatError("GENERIC", 500);
+        const [users, bans] = await Promise.all([response.json(), bansResponse.json()]);
+        const activeBans = new Map(
+          (bans as Array<{ user_id: string; expires_at: string | null; reason: string }>)
+            .filter((ban) => !ban.expires_at || Date.parse(ban.expires_at) > Date.now())
+            .map((ban) => [ban.user_id, { expiresAt: ban.expires_at, reason: ban.reason }]),
         );
-        if (!response.ok) throw new ChatError("GENERIC", 500);
-        return json({ users: await response.json() });
+        return json({ users: (users as Array<Record<string, unknown>>).map((item) => ({
+          ...item,
+          accountBan: activeBans.get(String(item.id)) ?? null,
+        })) });
       }
       case "admin-update-user": {
         await requireAdmin(user.id);
@@ -380,7 +454,155 @@ async function handle(request: Request) {
         const targetId = validUserId(body.userId);
         if (targetId === user.id) throw new ChatError("INVALID_MESSAGE", 400);
         await adminAuthUser(targetId, "DELETE");
+        // Account deletion never creates a device ban. That action is explicit.
         await rpc("chat_cleanup_orphan_conversations", { p_actor_id: user.id });
+        return json({ ok: true });
+      }
+      case "admin-set-account-ban": {
+        await requireAdmin(user.id);
+        const targetId = validUserId(body.userId);
+        const duration = body.duration;
+        const durationHours = duration === "until_lifted"
+          ? null
+          : Number(duration);
+        if (durationHours !== null && ![1, 24, 168, 720].includes(durationHours)) {
+          throw new ChatError("INVALID_MESSAGE", 400);
+        }
+        const targetResponse = await serviceRequest(
+          `/rest/v1/profiles?select=id&id=eq.${encodeURIComponent(targetId)}&limit=1`,
+        );
+        if (!targetResponse.ok) throw new ChatError("GENERIC", 500);
+        if (!(await targetResponse.json()).length) throw new ChatError("USER_NOT_FOUND", 404);
+        const reason = typeof body.reason === "string"
+          ? body.reason.trim().slice(0, 200)
+          : "";
+        const expiresAt = durationHours === null
+          ? null
+          : new Date(Date.now() + durationHours * 60 * 60 * 1000).toISOString();
+        const response = await serviceRequest("/rest/v1/account_bans?on_conflict=user_id", {
+          method: "POST",
+          headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+          body: JSON.stringify({
+            user_id: targetId,
+            expires_at: expiresAt,
+            reason: reason || "Conversation review in progress",
+            banned_by: user.id,
+          }),
+        });
+        if (!response.ok) throw new ChatError("GENERIC", 500);
+        return json({ accountBan: { expiresAt, reason: reason || "Conversation review in progress" } });
+      }
+      case "admin-clear-account-ban": {
+        await requireAdmin(user.id);
+        const targetId = validUserId(body.userId);
+        const response = await serviceRequest(
+          `/rest/v1/account_bans?user_id=eq.${encodeURIComponent(targetId)}`,
+          { method: "DELETE" },
+        );
+        if (!response.ok) throw new ChatError("GENERIC", 500);
+        return json({ ok: true });
+      }
+      case "admin-list-devices": {
+        await requireAdmin(user.id);
+        const targetId = validUserId(body.userId);
+        const [devicesResponse, bansResponse] = await Promise.all([
+          serviceRequest(`/rest/v1/device_registry?select=device_id,last_seen_at,user_agent&user_id=eq.${encodeURIComponent(targetId)}&order=last_seen_at.desc&limit=100`),
+          serviceRequest("/rest/v1/device_bans?select=device_id,reason,created_at&limit=1000"),
+        ]);
+        if (!devicesResponse.ok || !bansResponse.ok) throw new ChatError("GENERIC", 500);
+        const [devices, bans] = await Promise.all([devicesResponse.json(), bansResponse.json()]);
+        const byId = new Map((bans as Array<{ device_id: string; reason: string; created_at: string }>).map((ban) => [ban.device_id, ban]));
+        return json({ devices: (devices as Array<Record<string, unknown>>).map((device) => {
+          const ban = byId.get(String(device.device_id));
+          return { ...device, blockedAt: ban?.created_at ?? null, blockReason: ban?.reason ?? null };
+        }) });
+      }
+      case "admin-set-device-ban": {
+        await requireAdmin(user.id);
+        const deviceId = normalizeDeviceId(body.deviceId);
+        if (!deviceId) throw new ChatError("INVALID_MESSAGE", 400);
+        if (body.blocked === true) {
+          const reason = typeof body.reason === "string" ? body.reason.trim().slice(0, 200) : "";
+          const response = await serviceRequest("/rest/v1/device_bans?on_conflict=device_id", {
+            method: "POST",
+            headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+            body: JSON.stringify({
+              device_id: deviceId,
+              reason: reason || "Device blocked by an administrator",
+              banned_by: user.id,
+            }),
+          });
+          if (!response.ok) throw new ChatError("GENERIC", 500);
+        } else {
+          const response = await serviceRequest(
+            `/rest/v1/device_bans?device_id=eq.${encodeURIComponent(deviceId)}`,
+            { method: "DELETE" },
+          );
+          if (!response.ok) throw new ChatError("GENERIC", 500);
+        }
+        return json({ ok: true });
+      }
+      case "submit-report": {
+        const details = typeof body.details === "string" ? body.details.trim() : "";
+        const reportedUserId = body.reportedUserId ? validUserId(body.reportedUserId) : null;
+        const conversationId = body.conversationId == null ? null : validConversationId(body.conversationId);
+        if ((!reportedUserId && !conversationId) || details.length < 3 || details.length > 1000 || reportedUserId === user.id) {
+          throw new ChatError("INVALID_REPORT", 400);
+        }
+        if (reportedUserId) {
+          const targetResponse = await serviceRequest(`/rest/v1/profiles?select=id&id=eq.${encodeURIComponent(reportedUserId)}&limit=1`);
+          if (!targetResponse.ok) throw new ChatError("GENERIC", 500);
+          if (!(await targetResponse.json()).length) throw new ChatError("USER_NOT_FOUND", 404);
+        }
+        if (conversationId !== null) {
+          const membersResponse = await serviceRequest(
+            `/rest/v1/conversation_members?select=userId&conversationId=eq.${conversationId}`,
+          );
+          if (!membersResponse.ok) throw new ChatError("GENERIC", 500);
+          const members = (await membersResponse.json()) as Array<{ userId: string }>;
+          if (!members.some((member) => member.userId === user.id) || (reportedUserId && !members.some((member) => member.userId === reportedUserId))) {
+            throw new ChatError("NOT_FOUND", 404);
+          }
+        }
+        const response = await serviceRequest("/rest/v1/user_reports", {
+          method: "POST",
+          headers: { Prefer: "return=minimal" },
+          body: JSON.stringify({
+            reporter_id: user.id,
+            reported_user_id: reportedUserId,
+            conversation_id: conversationId,
+            details,
+          }),
+        });
+        if (!response.ok) throw new ChatError("GENERIC", 500);
+        return json({ ok: true });
+      }
+      case "admin-list-reports": {
+        await requireAdmin(user.id);
+        const [reportsResponse, profilesResponse] = await Promise.all([
+          serviceRequest("/rest/v1/user_reports?select=id,reporter_id,reported_user_id,conversation_id,details,status,created_at&order=created_at.desc&limit=500"),
+          serviceRequest("/rest/v1/profiles?select=id,username,name&limit=1000"),
+        ]);
+        if (!reportsResponse.ok || !profilesResponse.ok) throw new ChatError("GENERIC", 500);
+        const [reports, profiles] = await Promise.all([reportsResponse.json(), profilesResponse.json()]);
+        const byId = new Map((profiles as Array<{ id: string; username: string; name: string }>).map((profile) => [profile.id, profile]));
+        return json({ reports: (reports as Array<Record<string, unknown>>).map((report) => ({
+          ...report,
+          reporter: byId.get(String(report.reporter_id)) ?? null,
+          reportedUser: report.reported_user_id ? byId.get(String(report.reported_user_id)) ?? null : null,
+        })) });
+      }
+      case "admin-set-report-status": {
+        await requireAdmin(user.id);
+        const reportId = validMessageId(body.reportId);
+        const status = body.status;
+        if (!["open", "reviewed", "dismissed"].includes(status)) throw new ChatError("INVALID_MESSAGE", 400);
+        const response = await serviceRequest(`/rest/v1/user_reports?id=eq.${reportId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status, updated_at: new Date().toISOString() }),
+          headers: { Prefer: "return=minimal" },
+        });
+        if (!response.ok) throw new ChatError("GENERIC", 500);
         return json({ ok: true });
       }
       case "admin-list-conversations": {
@@ -660,10 +882,11 @@ async function handle(request: Request) {
         throw new ChatError("NOT_FOUND", 404);
     }
   } catch (error) {
-    if (error instanceof ChatError) return json({ error: error.code }, error.status);
+    if (error instanceof ChatError) return json({ error: error.code, ...error.details }, error.status);
     console.error("handle-chat failed:", error);
     return json({ error: "GENERIC" }, 500);
   }
 }
 
 Deno.serve(handle);
+
