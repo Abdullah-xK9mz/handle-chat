@@ -6,7 +6,7 @@ export const SUPABASE_PUBLISHABLE_KEY =
 
 const FUNCTION_URL = `${SUPABASE_URL}/functions/v1/handle-chat`
 const SESSION_KEY = 'handle.supabase.session.v1'
-const DEVICE_KEY = 'handle.device.installation.v1'
+const DEVICE_KEY = 'handle.device.installation.v2'
 const MAX_MEDIA_SIZE = 50 * 1024 * 1024
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024
 
