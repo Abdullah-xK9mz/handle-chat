@@ -6,6 +6,7 @@ import { MessageCircle } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
 import { cn } from '@/lib/utils'
 import { chatRequest, edgeRequest } from '@/lib/supabase'
+import { getNativeApp } from '@/lib/native-app'
 import { ConversationView } from './conversation-view'
 import { Sidebar, type SidebarSection } from './sidebar'
 import {
@@ -97,7 +98,10 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
     if (!data) return
     const previous = seenMessagesRef.current
     const current = new Map(conversations.map((conversation) => [conversation.id, conversation.lastMessageAt]))
-    if (previous && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    const nativeApp = getNativeApp()
+    const browserNotificationsAvailable =
+      typeof Notification !== 'undefined' && Notification.permission === 'granted'
+    if (previous && (nativeApp?.notify || browserNotificationsAvailable)) {
       const enabled = localStorage.getItem('handle.notifications.enabled.v1') === 'true'
       if (enabled && document.visibilityState === 'hidden') {
         for (const conversation of conversations) {
@@ -121,15 +125,22 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
                       : conversation.lastMediaType?.startsWith('image/')
                         ? t.chat.photoMessage
                         : t.chat.contact)
-            const notification = new Notification(conversation.isGroup ? conversation.groupName ?? conversation.otherName : conversation.otherName, {
-              body,
-              icon: conversation.isGroup ? undefined : conversation.otherImage ?? undefined,
-              tag: `handle-conversation-${conversation.id}`,
-            })
-            notification.onclick = () => {
-              window.focus()
-              openConversation(conversation.id)
-              notification.close()
+            const title = conversation.isGroup
+              ? conversation.groupName ?? conversation.otherName
+              : conversation.otherName
+            if (nativeApp?.notify) {
+              nativeApp.notify(title, body)
+            } else if (typeof Notification !== 'undefined') {
+              const notification = new Notification(title, {
+                body,
+                icon: conversation.isGroup ? undefined : conversation.otherImage ?? undefined,
+                tag: `handle-conversation-${conversation.id}`,
+              })
+              notification.onclick = () => {
+                window.focus()
+                openConversation(conversation.id)
+                notification.close()
+              }
             }
           }
         }

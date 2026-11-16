@@ -16,6 +16,7 @@ import {
   type Profile,
 } from '@/lib/supabase'
 import { errorMessage } from '@/lib/i18n/dictionaries'
+import { getNativeApp, pickNativeFileAsFile } from '@/lib/native-app'
 
 export function SettingsView({
   id,
@@ -86,6 +87,24 @@ export function SettingsView({
       setNotificationsEnabled(false)
       return
     }
+
+    const nativeApp = getNativeApp()
+    if (nativeApp?.requestPermission) {
+      try {
+        const granted = await nativeApp.requestPermission('notifications')
+        if (!granted) {
+          setError(t.settings.notificationsDenied)
+          return
+        }
+        localStorage.setItem('handle.notifications.enabled.v1', 'true')
+        setNotificationsEnabled(true)
+        return
+      } catch {
+        setError(t.settings.notificationsDenied)
+        return
+      }
+    }
+
     if (typeof Notification === 'undefined') {
       setError(t.settings.notificationsUnavailable)
       return
@@ -103,6 +122,35 @@ export function SettingsView({
     }
     localStorage.setItem('handle.notifications.enabled.v1', 'true')
     setNotificationsEnabled(true)
+  }
+
+  function selectPhoto(selected: File | null) {
+    if (!selected) return
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(selected.type)) {
+      setError(t.errors.INVALID_IMAGE)
+      return
+    }
+    if (selected.size > 5 * 1024 * 1024) {
+      setError(t.errors.IMAGE_TOO_LARGE)
+      return
+    }
+    setError(null)
+    setSaved(false)
+    setRemovePhoto(false)
+    setPhoto(selected)
+  }
+
+  async function changePhoto() {
+    const nativeApp = getNativeApp()
+    if (nativeApp?.pickFile) {
+      try {
+        selectPhoto(await pickNativeFileAsFile(['image/*']))
+      } catch {
+        setError(t.errors.GENERIC)
+      }
+      return
+    }
+    photoRef.current?.click()
   }
 
   async function saveProfile() {
@@ -277,19 +325,7 @@ export function SettingsView({
             onChange={(event) => {
               const selected = event.target.files?.[0] ?? null
               event.target.value = ''
-              if (!selected) return
-              if (!['image/jpeg', 'image/png', 'image/webp'].includes(selected.type)) {
-                setError(t.errors.INVALID_IMAGE)
-                return
-              }
-              if (selected.size > 5 * 1024 * 1024) {
-                setError(t.errors.IMAGE_TOO_LARGE)
-                return
-              }
-              setError(null)
-              setSaved(false)
-              setRemovePhoto(false)
-              setPhoto(selected)
+              selectPhoto(selected)
             }}
           />
           <div className="mt-4 flex flex-wrap gap-2">
@@ -298,7 +334,7 @@ export function SettingsView({
               variant="outline"
               className="gap-2"
               disabled={pending}
-              onClick={() => photoRef.current?.click()}
+              onClick={() => void changePhoto()}
             >
               <Camera aria-hidden="true" />
               {t.settings.changePhoto}
