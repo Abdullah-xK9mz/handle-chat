@@ -83,6 +83,8 @@ async function rpc(name: string, args: Record<string, unknown>) {
       "INVALID_MESSAGE_TYPE",
       "INVALID_MESSAGE",
       "INVALID_POLL",
+      "INVALID_REPLY",
+      "ABOUT_TOO_LONG",
       "EMPTY_STATUS",
       "STATUS_TOO_LONG",
       "NOT_FOUND",
@@ -311,6 +313,7 @@ async function handle(request: Request) {
           p_conversation_id: conversationId,
           p_user_id: user.id,
           p_body: body.body,
+          p_reply_to: body.replyToId == null ? null : validMessageId(body.replyToId),
         });
         return json({ message });
       }
@@ -330,6 +333,7 @@ async function handle(request: Request) {
           p_media_path: mediaPath,
           p_media_type: mediaType,
           p_media_name: mediaName,
+          p_reply_to: body.replyToId == null ? null : validMessageId(body.replyToId),
         });
         return json({ message });
       }
@@ -365,6 +369,7 @@ async function handle(request: Request) {
           p_name: name,
           p_avatar_path: avatarPath,
           p_update_image: updateImage,
+          p_about: typeof body.about === "string" ? body.about : "",
         });
         return json(profile);
       }
@@ -408,6 +413,38 @@ async function handle(request: Request) {
           p_message_type: messageType,
           p_body: typeof body.body === "string" ? body.body : "",
           p_payload: payload,
+          p_reply_to: body.replyToId == null ? null : validMessageId(body.replyToId),
+        });
+        return json({ message });
+      }
+      case "delete-message": {
+        const messageId = validMessageId(body.messageId);
+        await rpc("chat_delete_message", { p_user_id: user.id, p_message_id: messageId });
+        return json({ ok: true });
+      }
+      case "star-message": {
+        const messageId = validMessageId(body.messageId);
+        await rpc("chat_set_star", {
+          p_user_id: user.id,
+          p_message_id: messageId,
+          p_starred: body.starred === true,
+        });
+        return json({ ok: true });
+      }
+      case "pin-message": {
+        const messageId = validMessageId(body.messageId);
+        await rpc("chat_set_pin", {
+          p_user_id: user.id,
+          p_message_id: messageId,
+          p_pinned: body.pinned === true,
+        });
+        return json({ ok: true });
+      }
+      case "forward-message": {
+        const message = await rpc("chat_forward_message", {
+          p_user_id: user.id,
+          p_message_id: validMessageId(body.messageId),
+          p_target_conversation_id: validConversationId(body.targetConversationId),
         });
         return json({ message });
       }
@@ -480,4 +517,3 @@ async function handle(request: Request) {
 }
 
 Deno.serve(handle);
-

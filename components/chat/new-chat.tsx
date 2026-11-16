@@ -14,12 +14,12 @@ import { UserAvatar } from './user-avatar'
 
 type FoundUser = { username: string; name: string; image: string | null }
 
-export function NewChat({ onStarted }: { onStarted: (id: number) => void }) {
+export function NewChat({ onStarted, initialGroupMode = false, showModeToggle = true }: { onStarted: (id: number) => void; initialGroupMode?: boolean; showModeToggle?: boolean }) {
   const { t } = useI18n()
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState<string | null>(null)
-  const [groupMode, setGroupMode] = useState(false)
+  const [groupMode, setGroupMode] = useState(initialGroupMode)
   const [groupName, setGroupName] = useState('')
   const [selectedUsers, setSelectedUsers] = useState<FoundUser[]>([])
   const [creatingGroup, setCreatingGroup] = useState(false)
@@ -76,7 +76,6 @@ export function NewChat({ onStarted }: { onStarted: (id: number) => void }) {
       setGroupName('')
       setSelectedUsers([])
       setQuery('')
-      setGroupMode(false)
       onStarted(result.id)
     } catch (caught) {
       const code = typeof caught === 'object' && caught && 'code' in caught ? caught.code : 'GENERIC'
@@ -98,7 +97,7 @@ export function NewChat({ onStarted }: { onStarted: (id: number) => void }) {
         <span className="text-xs font-medium text-muted-foreground">
           {groupMode ? t.chat.groupMembers : t.chat.searchLabel}
         </span>
-        <button
+        {showModeToggle && <button
           type="button"
           className="text-xs font-medium text-primary hover:underline"
           onClick={() => {
@@ -107,7 +106,7 @@ export function NewChat({ onStarted }: { onStarted: (id: number) => void }) {
           }}
         >
           {groupMode ? t.chat.conversations : t.chat.newGroup}
-        </button>
+        </button>}
       </div>
       {groupMode && (
         <div className="mb-2 space-y-2">
@@ -229,4 +228,3 @@ export function NewChat({ onStarted }: { onStarted: (id: number) => void }) {
     </div>
   )
 }
-

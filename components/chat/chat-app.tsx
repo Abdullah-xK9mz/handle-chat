@@ -5,8 +5,9 @@ import useSWR from 'swr'
 import { MessageCircle } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
 import { cn } from '@/lib/utils'
+import { chatRequest } from '@/lib/supabase'
 import { ConversationView } from './conversation-view'
-import { Sidebar } from './sidebar'
+import { Sidebar, type SidebarSection } from './sidebar'
 import {
   fetcher,
   type ConversationSummary,
@@ -16,6 +17,8 @@ import {
 export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   const { t } = useI18n()
   const [activeId, setActiveId] = useState<number | null>(null)
+  const [section, setSection] = useState<SidebarSection>('chats')
+  const deepLinkHandled = useRef(false)
   const { data, error, isLoading, mutate } = useSWR<{
     conversations: ConversationSummary[]
   }>('/api/conversations', fetcher, { refreshInterval: 3000 })
@@ -23,6 +26,32 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   const conversations = data?.conversations ?? []
   const active = conversations.find((c) => c.id === activeId) ?? null
   const seenMessagesRef = useRef<Map<number, string> | null>(null)
+
+  useEffect(() => {
+    if (deepLinkHandled.current) return
+    deepLinkHandled.current = true
+    const username = new URLSearchParams(window.location.search).get('chat')
+    if (!username) return
+    window.history.replaceState(window.history.state, '', window.location.pathname)
+    void chatRequest<{ id: number }>('/api/conversations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username }),
+    }).then(({ id }) => {
+      setSection('chats')
+      setActiveId(id)
+      window.history.pushState({ handleChatConversation: id }, '', window.location.href)
+      void mutate()
+    }).catch(() => undefined)
+  }, [mutate])
+
+  useEffect(() => {
+    function handleBack() {
+      if (activeId !== null) setActiveId(null)
+    }
+    window.addEventListener('popstate', handleBack)
+    return () => window.removeEventListener('popstate', handleBack)
+  }, [activeId])
 
   useEffect(() => {
     if (!data) return
@@ -59,7 +88,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
             })
             notification.onclick = () => {
               window.focus()
-              setActiveId(conversation.id)
+              openConversation(conversation.id)
               notification.close()
             }
           }
@@ -71,7 +100,13 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
 
   function openConversation(id: number) {
     setActiveId(id)
+    window.history.pushState({ handleChatConversation: id }, '', window.location.href)
     mutate()
+  }
+
+  function changeSection(next: SidebarSection) {
+    setActiveId(null)
+    setSection(next)
   }
 
   return (
@@ -90,6 +125,8 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
             error={error}
             activeId={activeId}
             onSelect={openConversation}
+            section={section}
+            onSectionChange={changeSection}
           />
         </aside>
 
@@ -108,8 +145,9 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
               fallbackName={active?.otherName}
               fallbackUsername={active?.otherUsername ?? undefined}
               fallbackImage={active?.otherImage ?? undefined}
-              onBack={() => setActiveId(null)}
+              onBack={() => window.history.back()}
               onActivity={() => mutate()}
+              availableConversations={conversations}
             />
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
@@ -129,4 +167,3 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
     </div>
   )
 }
-

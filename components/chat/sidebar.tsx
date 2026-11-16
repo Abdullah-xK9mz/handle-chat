@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { BellOff, Settings, Users } from 'lucide-react'
+import { BellOff, CircleDashed, MessageSquareText, Settings, Users } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
 import { LanguageToggle } from '@/components/language-toggle'
 import { buttonVariants } from '@/components/ui/button'
@@ -15,6 +15,8 @@ import {
 import { UserAvatar } from './user-avatar'
 import { StatusStrip } from './status-strip'
 
+export type SidebarSection = 'chats' | 'groups' | 'statuses'
+
 type SidebarProps = {
   currentUser: CurrentUser
   conversations: ConversationSummary[]
@@ -22,6 +24,8 @@ type SidebarProps = {
   error: unknown
   activeId: number | null
   onSelect: (id: number) => void
+  section: SidebarSection
+  onSectionChange: (section: SidebarSection) => void
 }
 
 export function Sidebar({
@@ -31,8 +35,11 @@ export function Sidebar({
   error,
   activeId,
   onSelect,
+  section,
+  onSectionChange,
 }: SidebarProps) {
   const { t, locale } = useI18n()
+  const visibleConversations = conversations.filter((conversation) => section === 'groups' ? conversation.isGroup : !conversation.isGroup)
 
   return (
     <>
@@ -43,6 +50,7 @@ export function Sidebar({
           <p className="truncate text-xs text-muted-foreground" dir="ltr">
             <span className="inline-block">@{currentUser.username}</span>
           </p>
+          {currentUser.about && <p className="truncate text-[11px] text-muted-foreground">{currentUser.about}</p>}
         </div>
         <LanguageToggle compact />
         <Link
@@ -55,15 +63,13 @@ export function Sidebar({
         </Link>
       </header>
 
-      <StatusStrip currentUser={currentUser} />
-
-      <NewChat onStarted={onSelect} />
+      {section !== 'statuses' && <NewChat key={section} initialGroupMode={section === 'groups'} showModeToggle={section === 'chats'} onStarted={onSelect} />}
 
       <nav
         aria-label={t.chat.conversations}
         className="min-h-0 flex-1 overflow-y-auto"
       >
-        {isLoading ? (
+        {section === 'statuses' ? <StatusStrip currentUser={currentUser} fullPage /> : isLoading ? (
           <ul className="flex flex-col gap-1 p-2" aria-hidden="true">
             {Array.from({ length: 4 }).map((_, i) => (
               <li key={i} className="flex items-center gap-3 rounded-xl p-3">
@@ -79,7 +85,7 @@ export function Sidebar({
           <p className="p-6 text-center text-sm text-destructive">
             {t.chat.loadError}
           </p>
-        ) : conversations.length === 0 ? (
+        ) : visibleConversations.length === 0 ? (
           <div className="flex flex-col gap-1 p-6 text-center">
             <p className="text-sm font-medium">{t.chat.noConversations}</p>
             <p className="text-sm text-muted-foreground text-pretty">
@@ -88,7 +94,7 @@ export function Sidebar({
           </div>
         ) : (
           <ul className="flex flex-col gap-0.5 p-2">
-            {conversations.map((c) => {
+            {visibleConversations.map((c) => {
               const isActive = c.id === activeId
               const messagePreview = c.lastBody
                 ? c.lastBody
@@ -169,7 +175,18 @@ export function Sidebar({
           </ul>
         )}
       </nav>
+      <nav aria-label={t.chat.tabs.chats} className="grid shrink-0 grid-cols-3 border-t bg-background px-2 pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1 md:pb-1">
+        {([
+          ['chats', t.chat.tabs.chats, MessageSquareText],
+          ['groups', t.chat.tabs.groups, Users],
+          ['statuses', t.chat.tabs.statuses, CircleDashed],
+        ] as const).map(([id, label, Icon]) => (
+          <button key={id} type="button" onClick={() => onSectionChange(id)} aria-current={section === id ? 'page' : undefined} className={cn('flex min-h-14 flex-col items-center justify-center gap-1 rounded-xl text-[11px] text-muted-foreground transition-colors hover:bg-muted', section === id && 'bg-primary/10 font-semibold text-primary')}>
+            <Icon className="size-5" aria-hidden="true" />
+            <span>{label}</span>
+          </button>
+        ))}
+      </nav>
     </>
   )
 }
-

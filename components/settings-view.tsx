@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Camera, LogOut, Save } from 'lucide-react'
+import { ArrowLeft, Camera, Check, LogOut, QrCode, Save, ScanLine, X } from 'lucide-react'
 import { LanguageToggle } from '@/components/language-toggle'
 import { UserAvatar } from '@/components/chat/user-avatar'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -22,27 +22,51 @@ export function SettingsView({
   name,
   username,
   image,
+  about = '',
 }: {
   id: string
   name: string
   username: string | null
   image: string | null
+  about?: string
 }) {
   const router = useRouter()
   const { t } = useI18n()
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [displayName, setDisplayName] = useState(name)
+  const [profileAbout, setProfileAbout] = useState(about)
   const [profileImage, setProfileImage] = useState(image)
   const [photo, setPhoto] = useState<File | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
   const [removePhoto, setRemovePhoto] = useState(false)
   const [saved, setSaved] = useState(false)
   const [notificationsEnabled, setNotificationsEnabled] = useState(false)
+  const [shareUrl, setShareUrl] = useState('')
+  const [copiedLink, setCopiedLink] = useState(false)
+  const [scannerOpen, setScannerOpen] = useState(false)
+  const [scanning, setScanning] = useState(false)
+  const [scannerMessage, setScannerMessage] = useState<string | null>(null)
+  const [scannerUsername, setScannerUsername] = useState('')
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const scannerRunning = useRef(false)
   const photoRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     setNotificationsEnabled(localStorage.getItem('handle.notifications.enabled.v1') === 'true')
+  }, [])
+
+  useEffect(() => {
+    const base = new URL('../', window.location.href)
+    base.search = ''
+    base.searchParams.set('chat', username ?? '')
+    setShareUrl(base.toString())
+  }, [username])
+
+  useEffect(() => () => {
+    scannerRunning.current = false
+    streamRef.current?.getTracks().forEach((track) => track.stop())
   }, [])
 
   useEffect(() => {
@@ -55,8 +79,13 @@ export function SettingsView({
     return () => URL.revokeObjectURL(url)
   }, [photo])
 
-  async function enableNotifications() {
+  async function toggleNotifications() {
     setError(null)
+    if (notificationsEnabled) {
+      localStorage.setItem('handle.notifications.enabled.v1', 'false')
+      setNotificationsEnabled(false)
+      return
+    }
     if (typeof Notification === 'undefined') {
       setError(t.settings.notificationsDenied)
       return
@@ -82,10 +111,12 @@ export function SettingsView({
       const updated = await edgeRequest<Profile>({
         action: 'update-profile',
         name: displayName,
+        about: profileAbout,
         avatarPath,
         updateImage: Boolean(photo || removePhoto),
       })
       setDisplayName(updated.name)
+      setProfileAbout(updated.about ?? '')
       setProfileImage(updated.image)
       setPhoto(null)
       setRemovePhoto(false)
@@ -113,6 +144,79 @@ export function SettingsView({
     }
   }
 
+  function openScannedValue(raw: string) {
+    let candidate = raw.trim()
+    try {
+      const parsed = new URL(candidate)
+      candidate = parsed.searchParams.get('chat') ?? candidate
+    } catch {
+      // A plain username is accepted as well as a full profile URL.
+    }
+    candidate = candidate.replace(/^@/, '').toLowerCase()
+    if (!/^[a-z0-9_.]{3,20}$/.test(candidate)) {
+      setScannerMessage(t.errors.INVALID_USERNAME)
+      return
+    }
+    stopScanner()
+    setScannerOpen(false)
+    router.push(`/?chat=${encodeURIComponent(candidate)}`)
+  }
+
+  async function startScanner() {
+    setScannerMessage(null)
+    const Detector = (window as unknown as { BarcodeDetector?: new (options?: { formats: string[] }) => { detect: (source: HTMLVideoElement) => Promise<Array<{ rawValue: string }>> } }).BarcodeDetector
+    if (!Detector) {
+      setScannerMessage(t.settings.scannerUnsupported)
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+      streamRef.current = stream
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        await videoRef.current.play()
+      }
+      scannerRunning.current = true
+      setScanning(true)
+      const detector = new Detector({ formats: ['qr_code'] })
+      const scan = async () => {
+        if (!scannerRunning.current || !videoRef.current) return
+        try {
+          const codes = await detector.detect(videoRef.current)
+          if (codes[0]?.rawValue) {
+            openScannedValue(codes[0].rawValue)
+            return
+          }
+        } catch {
+          setScannerMessage(t.settings.scannerCameraError)
+          stopScanner()
+          return
+        }
+        window.setTimeout(() => void scan(), 250)
+      }
+      void scan()
+    } catch {
+      setScannerMessage(t.settings.scannerCameraError)
+    }
+  }
+
+  function stopScanner() {
+    scannerRunning.current = false
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+    if (videoRef.current) videoRef.current.srcObject = null
+    setScanning(false)
+  }
+
+  async function copyProfileLink() {
+    try {
+      await navigator.clipboard.writeText(shareUrl)
+      setCopiedLink(true)
+    } catch {
+      setError(t.errors.GENERIC)
+    }
+  }
+
   return (
     <main className="min-h-dvh bg-canvas p-4 sm:p-6">
       <div className="mx-auto max-w-xl">
@@ -127,6 +231,18 @@ export function SettingsView({
           <h1 className="flex-1 text-lg font-semibold">{t.settings.title}</h1>
           <LanguageToggle compact />
         </header>
+
+        <section className="mb-4 rounded-2xl border bg-card p-5 shadow-sm sm:p-6">
+          <div className="flex items-center gap-2"><QrCode className="size-5 text-primary" aria-hidden="true" /><h2 className="font-semibold">{t.settings.qrTitle}</h2></div>
+          <p className="mt-1 text-sm text-muted-foreground">{t.settings.qrHint}</p>
+          <div className="mt-4 flex flex-col items-center gap-4 sm:flex-row">
+            {shareUrl && <img src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&format=svg&margin=8&data=${encodeURIComponent(shareUrl)}`} width={180} height={180} alt={t.settings.qrTitle} className="rounded-xl bg-white p-2" />}
+            <div className="flex w-full flex-col gap-2 sm:w-auto">
+              <Button type="button" variant="outline" className="gap-2" onClick={() => { setScannerMessage(null); setScannerOpen(true) }}><ScanLine className="size-4" />{t.settings.scanQr}</Button>
+              <Button type="button" variant="ghost" className="gap-2" onClick={() => void copyProfileLink()} disabled={!shareUrl}><Check className="size-4" />{copiedLink ? t.chat.copiedMessage : t.settings.copyProfileLink}</Button>
+            </div>
+          </div>
+        </section>
 
         <section className="rounded-2xl border bg-card p-5 shadow-sm sm:p-6">
           <div className="flex items-center gap-4">
@@ -214,6 +330,9 @@ export function SettingsView({
             }}
             className="mt-2 h-10 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30"
           />
+          <label htmlFor="profile-about" className="mt-5 block text-sm font-medium">{t.settings.about}</label>
+          <textarea id="profile-about" value={profileAbout} maxLength={150} disabled={pending} onChange={(event) => { setProfileAbout(event.target.value); setSaved(false) }} placeholder={t.settings.aboutPlaceholder} className="mt-2 min-h-20 w-full resize-y rounded-xl border border-input bg-background px-3 py-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30" />
+          <p className="mt-1 text-xs text-muted-foreground">{t.settings.aboutHint}</p>
           {username && (
             <>
               <label htmlFor="account-username" className="mt-4 block text-sm font-medium">
@@ -257,8 +376,8 @@ export function SettingsView({
         <section className="mt-4 rounded-2xl border bg-card p-5 shadow-sm sm:p-6">
           <h2 className="font-semibold">{t.settings.notifications}</h2>
           <p className="mt-1 text-sm text-muted-foreground">{t.settings.notificationsHint}</p>
-          <Button type="button" variant="outline" disabled={notificationsEnabled} onClick={() => void enableNotifications()} className="mt-4">
-            {notificationsEnabled ? t.settings.notificationsEnabled : t.settings.enableNotifications}
+          <Button type="button" variant={notificationsEnabled ? 'default' : 'outline'} onClick={() => void toggleNotifications()} className="mt-4">
+            {notificationsEnabled ? t.settings.disableNotifications : t.settings.enableNotifications}
           </Button>
         </section>
 
@@ -279,7 +398,22 @@ export function SettingsView({
           </Button>
         </section>
       </div>
+
+      {scannerOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-labelledby="qr-scanner-title">
+          <section className="w-full max-w-md rounded-2xl bg-background p-5 shadow-2xl">
+            <header className="mb-3 flex items-center gap-2"><h2 id="qr-scanner-title" className="flex-1 font-semibold">{t.settings.scanQr}</h2><Button type="button" variant="ghost" size="icon" onClick={() => { stopScanner(); setScannerOpen(false) }} aria-label={t.chat.cancel}><X /></Button></header>
+            <p className="mb-3 text-sm text-muted-foreground">{t.settings.scanQrHint}</p>
+            <video ref={videoRef} playsInline muted className={`max-h-64 w-full rounded-xl bg-black object-cover ${scanning ? 'block' : 'hidden'}`} />
+            {scannerMessage && <p role="status" className="my-3 text-sm text-muted-foreground">{scannerMessage}</p>}
+            <div className="mt-3 flex flex-wrap gap-2">
+              {scanning ? <Button type="button" variant="outline" onClick={stopScanner}>{t.settings.stopScanner}</Button> : <Button type="button" variant="outline" onClick={() => void startScanner()}>{t.settings.startScanner}</Button>}
+              <input value={scannerUsername} onChange={(event) => setScannerUsername(event.target.value)} placeholder={t.auth.usernamePlaceholder} dir="ltr" className="h-10 min-w-0 flex-1 rounded-xl border bg-background px-3 text-sm" />
+              <Button type="button" onClick={() => openScannedValue(scannerUsername)} disabled={!scannerUsername.trim()}>{t.settings.openChat}</Button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   )
 }
-

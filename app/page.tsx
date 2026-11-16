@@ -3,12 +3,14 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { ChatApp } from '@/components/chat/chat-app'
-import { edgeRequest, type Profile } from '@/lib/supabase'
+import { edgeRequest, SupabaseError, type Profile } from '@/lib/supabase'
+import { Button } from '@/components/ui/button'
 
 export default function HomePage() {
   const router = useRouter()
   const [profile, setProfile] = useState<Profile | null>(null)
   const [failed, setFailed] = useState(false)
+  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -16,16 +18,20 @@ export default function HomePage() {
       .then((result) => {
         if (!cancelled) setProfile(result)
       })
-      .catch(() => {
-        if (!cancelled) {
-          setFailed(true)
+      .catch((error) => {
+        if (cancelled) return
+        setFailed(true)
+        if (error instanceof SupabaseError && error.status === 401) {
+          const chat = new URLSearchParams(window.location.search).get('chat')
+          if (chat) localStorage.setItem('handle.pending.deepLink.v1', chat)
           router.replace('/sign-in')
         }
       })
     return () => {
       cancelled = true
     }
-  }, [router])
+  }, [router, attempt])
+
 
   if (!profile && !failed) {
     return (
@@ -34,7 +40,12 @@ export default function HomePage() {
       </main>
     )
   }
-  if (!profile) return null
+  if (!profile) return failed ? (
+    <main className="flex min-h-dvh flex-col items-center justify-center gap-3 bg-canvas px-5 text-center">
+      <p className="text-sm text-destructive">تعذّر الاتصال بالمحادثات. تحقق من الإنترنت وحاول مجددًا.</p>
+      <Button onClick={() => { setFailed(false); setAttempt((value) => value + 1) }}>إعادة المحاولة</Button>
+    </main>
+  ) : null
 
   return (
     <ChatApp
@@ -43,6 +54,7 @@ export default function HomePage() {
         name: profile.name,
         username: profile.username,
         image: profile.image,
+        about: profile.about,
       }}
     />
   )

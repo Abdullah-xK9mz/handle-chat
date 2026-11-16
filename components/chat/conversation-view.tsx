@@ -10,8 +10,15 @@ import {
   Check,
   CheckCheck,
   Clock,
+  Copy,
+  Forward,
+  MoreHorizontal,
+  Pin,
+  Reply,
   Search,
   ShieldCheck,
+  Star,
+  Trash2,
   X,
 } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
@@ -28,6 +35,7 @@ import {
   formatMessageTime,
   type ChatMessage,
   type ConversationDetail,
+  type ConversationSummary,
 } from './types'
 import { UserAvatar } from './user-avatar'
 
@@ -40,6 +48,7 @@ type ConversationViewProps = {
   fallbackImage?: string
   onBack: () => void
   onActivity: () => void
+  availableConversations: ConversationSummary[]
 }
 
 export function ConversationView({
@@ -51,6 +60,7 @@ export function ConversationView({
   fallbackImage,
   onBack,
   onActivity,
+  availableConversations,
 }: ConversationViewProps) {
   const { t, locale } = useI18n()
   const key = `/api/conversations/${conversationId}/messages`
@@ -64,6 +74,10 @@ export function ConversationView({
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<Array<{ id: number; body: string; createdAt: string }>>([])
   const [searching, setSearching] = useState(false)
+  const [replyTo, setReplyTo] = useState<ChatMessage | null>(null)
+  const [forwarding, setForwarding] = useState<ChatMessage | null>(null)
+  const [forwardTargetId, setForwardTargetId] = useState<number | ''>('')
+  const [actionNotice, setActionNotice] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const loadingMediaRef = useRef(new Set<string>())
 
@@ -80,6 +94,53 @@ export function ConversationView({
   const otherReadAt = data?.otherLastReadAt
     ? new Date(data.otherLastReadAt).getTime()
     : 0
+  const otherDeliveredAt = data?.otherLastDeliveredAt
+    ? new Date(data.otherLastDeliveredAt).getTime()
+    : 0
+
+  function setReply(message: ChatMessage) {
+    if (message.deletedAt) return
+    setReplyTo({ ...message, replySenderName: message.senderId === currentUserId ? t.chat.youPrefix.trim() : name })
+    document.getElementById('message')?.focus()
+  }
+
+  async function copyMessage(message: ChatMessage) {
+    const payload = message.payload ?? {}
+    const text = message.body || message.mediaName || (Object.keys(payload).length ? JSON.stringify(payload) : '')
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      setActionNotice(t.chat.copiedMessage)
+    } catch {
+      setSendError(t.errors.GENERIC)
+    }
+  }
+
+  async function runMessageAction(action: 'delete' | 'star' | 'pin', message: ChatMessage) {
+    setSendError(null)
+    try {
+      if (action === 'delete') await edgeRequest({ action: 'delete-message', messageId: message.id })
+      else if (action === 'star') await edgeRequest({ action: 'star-message', messageId: message.id, starred: !message.starredByMe })
+      else await edgeRequest({ action: 'pin-message', messageId: message.id, pinned: !message.pinned })
+      await mutate()
+      onActivity()
+    } catch {
+      setSendError(t.errors.GENERIC)
+    }
+  }
+
+  async function forwardMessage() {
+    if (!forwarding || !forwardTargetId) return
+    try {
+      await edgeRequest({ action: 'forward-message', messageId: forwarding.id, targetConversationId: forwardTargetId })
+      setForwarding(null)
+      setForwardTargetId('')
+      setActionNotice(t.chat.forwarded)
+      onActivity()
+    } catch {
+      setSendError(t.errors.GENERIC)
+    }
+  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: 'end' })
@@ -112,7 +173,7 @@ export function ConversationView({
     }
   }, [conversationId, mediaUrls, messages])
 
-  async function handleSend(body: string, file: File | null) {
+  async function handleSend(body: string, file: File | null, replyToId?: number) {
     setSendError(null)
     const optimistic: ChatMessage = {
       id: -Date.now(),
@@ -122,23 +183,27 @@ export function ConversationView({
       mediaType: file?.type ?? null,
       mediaName: file?.name ?? null,
       pending: true,
+      replyTo: replyToId ?? null,
+      replyBody: replyTo?.body ?? null,
+      replySenderName: replyTo?.senderId === currentUserId ? t.chat.youPrefix.trim() : name,
     }
 
     try {
       await mutate(
         async (current) => {
           const message = file
-            ? await sendChatMedia<ChatMessage>(conversationId, file, body)
+            ? await sendChatMedia<ChatMessage>(conversationId, file, body, replyToId)
             : (
                 await chatRequest<{ message: ChatMessage }>(key, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ body }),
+                  body: JSON.stringify({ body, replyToId: replyToId ?? null }),
                 })
               ).message
           const base = current ?? {
             other: null,
             otherLastReadAt: null,
+            otherLastDeliveredAt: null,
             messages: [],
           }
           return { ...base, messages: [...base.messages, message] }
@@ -147,6 +212,7 @@ export function ConversationView({
           optimisticData: (current) => ({
             other: current?.other ?? null,
             otherLastReadAt: current?.otherLastReadAt ?? null,
+            otherLastDeliveredAt: current?.otherLastDeliveredAt ?? null,
             messages: [...(current?.messages ?? []), optimistic],
           }),
           rollbackOnError: true,
@@ -155,6 +221,7 @@ export function ConversationView({
         },
       )
       onActivity()
+      setReplyTo(null)
     } catch (err) {
       const code =
         typeof err === 'object' && err && 'code' in err
@@ -228,6 +295,8 @@ export function ConversationView({
             <p className="truncate text-xs text-muted-foreground">
               {t.chat.memberCount(data?.other?.participantCount ?? 0)}
             </p>
+          ) : data?.other?.about ? (
+            <p className="truncate text-xs text-muted-foreground">{data.other.about}</p>
           ) : username && (
             <p className="truncate text-xs text-muted-foreground" dir="ltr">
               <span className="inline-block">@{username}</span>
@@ -282,6 +351,15 @@ export function ConversationView({
         </div>
       )}
 
+      {data?.pinnedMessage && (
+        <button type="button" className="flex w-full items-center gap-2 border-b bg-primary/5 px-4 py-2 text-start text-xs hover:bg-primary/10" onClick={() => document.getElementById(`message-${data.pinnedMessage?.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>
+          <Pin className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
+          <span className="font-medium">{t.chat.pinnedMessage}</span>
+          <span className="min-w-0 flex-1 truncate text-muted-foreground">{data.pinnedMessage.deleted ? t.chat.deletedMessage : data.pinnedMessage.body}</span>
+        </button>
+      )}
+      {actionNotice && <p role="status" className="border-b bg-background px-4 py-1.5 text-center text-xs text-muted-foreground">{actionNotice}</p>}
+
       <div
         className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-8"
         role="log"
@@ -313,6 +391,8 @@ export function ConversationView({
                 !showDay && prev?.senderId === message.senderId
               const read =
                 mine && new Date(message.createdAt).getTime() <= otherReadAt
+              const delivered =
+                mine && new Date(message.createdAt).getTime() <= otherDeliveredAt
               const payload = (message.payload ?? {}) as {
                 latitude?: number
                 longitude?: number
@@ -350,7 +430,7 @@ export function ConversationView({
                   >
                     <div
                       className={cn(
-                        'max-w-[80%] rounded-2xl px-3 py-1.5 shadow-xs md:max-w-[65%]',
+                        'relative max-w-[88%] rounded-2xl px-3 py-1.5 pt-7 shadow-xs md:max-w-[72%]',
                         mine
                           ? 'bg-bubble-out text-bubble-out-foreground'
                           : 'bg-bubble-in text-bubble-in-foreground',
@@ -358,6 +438,26 @@ export function ConversationView({
                           (mine ? 'rounded-se-md' : 'rounded-ss-md'),
                       )}
                     >
+                      {!message.deletedAt && !message.pending && (
+                        <details className="absolute end-1 top-1 z-10">
+                          <summary className="flex size-6 cursor-pointer list-none items-center justify-center rounded-full bg-background/70 text-muted-foreground marker:hidden hover:bg-background [&::-webkit-details-marker]:hidden" aria-label={t.chat.messageActions} title={t.chat.messageActions}><MoreHorizontal className="size-4" /></summary>
+                          <div className="absolute end-0 top-7 z-30 grid min-w-48 gap-0.5 rounded-xl border bg-popover p-1.5 text-popover-foreground shadow-xl">
+                            <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={(event) => { setReply(message); event.currentTarget.closest('details')?.removeAttribute('open') }}><Reply className="size-3.5" />{t.chat.reply}</button>
+                            <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={(event) => { void copyMessage(message); event.currentTarget.closest('details')?.removeAttribute('open') }}><Copy className="size-3.5" />{t.chat.copyMessage}</button>
+                            <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={(event) => { setForwarding(message); event.currentTarget.closest('details')?.removeAttribute('open') }}><Forward className="size-3.5" />{t.chat.forwardMessage}</button>
+                            <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={(event) => { void runMessageAction('star', message); event.currentTarget.closest('details')?.removeAttribute('open') }}><Star className={cn('size-3.5', message.starredByMe && 'fill-current text-amber-500')} />{message.starredByMe ? t.chat.unstarMessage : t.chat.starMessage}</button>
+                            <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={(event) => { void runMessageAction('pin', message); event.currentTarget.closest('details')?.removeAttribute('open') }}><Pin className="size-3.5" />{message.pinned ? t.chat.unpinMessage : t.chat.pinMessage}</button>
+                            {mine && <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs text-destructive hover:bg-destructive/10" onClick={(event) => { void runMessageAction('delete', message); event.currentTarget.closest('details')?.removeAttribute('open') }}><Trash2 className="size-3.5" />{t.chat.deleteMessage}</button>}
+                          </div>
+                        </details>
+                      )}
+                      {message.replyTo && (
+                        <button type="button" className="mb-1 w-full rounded-lg border-s-2 border-primary/70 bg-background/50 px-2 py-1 text-start" onClick={() => document.getElementById(`message-${message.replyTo}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>
+                          <span className="block truncate text-[11px] font-semibold text-primary">{message.replySenderName || t.chat.reply}</span>
+                          <span className="block truncate text-xs opacity-75">{message.replyDeleted ? t.chat.replyDeleted : message.replyBody || t.chat.replyDeleted}</span>
+                        </button>
+                      )}
+                      {message.forwardedFrom && <p className="mb-1 flex items-center gap-1 text-[11px] italic opacity-75"><Forward className="size-3" />{t.chat.forwarded}</p>}
                       {message.mediaType && (
                         <div className="mb-1 min-w-44 overflow-hidden rounded-xl">
                           {mediaUrl ? (
@@ -442,14 +542,16 @@ export function ConversationView({
                           ))}
                         </div>
                       )}
-                      {message.body && (
+                      {message.deletedAt ? (
+                        <p className="py-1 text-sm italic opacity-70">{t.chat.deletedMessage}</p>
+                      ) : message.body ? (
                         <p
                           dir="auto"
                           className="text-sm leading-relaxed break-words whitespace-pre-wrap"
                         >
                           {message.body}
                         </p>
-                      )}
+                      ) : null}
                       <p
                         className={cn(
                           'mt-0.5 flex items-center justify-end gap-1 text-[11px]',
@@ -464,9 +566,11 @@ export function ConversationView({
                             <Clock className="size-3" aria-label={t.chat.sending} />
                           ) : read ? (
                             <CheckCheck
-                              className="size-3.5"
+                              className="size-3.5 text-sky-500"
                               aria-label={t.chat.read}
                             />
+                          ) : delivered ? (
+                            <CheckCheck className="size-3.5" aria-label={t.chat.delivered} />
                           ) : (
                             <Check
                               className="size-3.5"
@@ -491,12 +595,15 @@ export function ConversationView({
       ) : (
         <MessageComposer
           onSend={handleSend}
+          replyMessage={replyTo}
+          onCancelReply={() => setReplyTo(null)}
           onSendStructured={async (messageType, payload) => {
             setSendError(null)
             try {
-              await edgeRequest({ action: 'send-structured-message', conversationId, messageType, payload })
+              await edgeRequest({ action: 'send-structured-message', conversationId, messageType, payload, replyToId: replyTo?.id ?? null })
               await mutate()
               onActivity()
+              setReplyTo(null)
               return true
             } catch (caught) {
               const code = typeof caught === 'object' && caught && 'code' in caught ? caught.code : 'GENERIC'
@@ -514,7 +621,20 @@ export function ConversationView({
           <img src={imageModal} alt={t.chat.photoMessage} className="max-h-[94dvh] max-w-[96vw] object-contain" onClick={(event) => event.stopPropagation()} />
         </div>
       )}
+
+      {forwarding && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4" role="dialog" aria-modal="true" aria-labelledby="forward-dialog-title">
+          <section className="w-full max-w-sm rounded-2xl bg-background p-5 shadow-2xl">
+            <header className="mb-4 flex items-center gap-2"><h2 id="forward-dialog-title" className="flex-1 font-semibold">{t.chat.forwardMessage}</h2><Button type="button" variant="ghost" size="icon" onClick={() => setForwarding(null)} aria-label={t.chat.cancel}><X /></Button></header>
+            <label htmlFor="forward-target" className="mb-2 block text-sm">{t.chat.chooseConversation}</label>
+            <select id="forward-target" value={forwardTargetId} onChange={(event) => setForwardTargetId(event.target.value ? Number(event.target.value) : '')} className="h-11 w-full rounded-xl border bg-background px-3 text-sm">
+              <option value="">{t.chat.chooseConversation}</option>
+              {availableConversations.filter((conversation) => conversation.id !== conversationId).map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.otherName}</option>)}
+            </select>
+            <div className="mt-4 flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setForwarding(null)}>{t.chat.cancel}</Button><Button type="button" disabled={!forwardTargetId} onClick={() => void forwardMessage()}>{t.chat.forwardMessage}</Button></div>
+          </section>
+        </div>
+      )}
     </>
   )
 }
-

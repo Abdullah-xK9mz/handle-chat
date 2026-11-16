@@ -12,10 +12,12 @@ import {
   SendHorizontal,
   StopCircle,
   UserRound,
+  Reply,
   X,
 } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
 import { Button } from '@/components/ui/button'
+import type { ChatMessage } from './types'
 
 const MAX_LENGTH = 4000
 const MAX_FILE_SIZE = 50 * 1024 * 1024
@@ -37,10 +39,14 @@ type StructuredType = 'location' | 'contact' | 'poll' | 'event'
 export function MessageComposer({
   onSend,
   onSendStructured,
+  replyMessage,
+  onCancelReply,
   error,
 }: {
-  onSend: (body: string, file: File | null) => Promise<boolean>
+  onSend: (body: string, file: File | null, replyToId?: number) => Promise<boolean>
   onSendStructured: (type: StructuredType, payload: Record<string, unknown>) => Promise<boolean>
+  replyMessage: ChatMessage | null
+  onCancelReply: () => void
   error: string | null
 }) {
   const { t } = useI18n()
@@ -87,7 +93,7 @@ export function MessageComposer({
     setLocalError(null)
     requestAnimationFrame(resize)
     try {
-      const ok = await onSend(body, attachment)
+      const ok = await onSend(body, attachment, replyMessage?.id)
       if (!ok) {
         setValue(body)
         setFile(attachment)
@@ -212,6 +218,7 @@ export function MessageComposer({
       {activeError && <p role="alert" className="mx-auto mb-2 max-w-3xl text-xs text-destructive">{activeError}</p>}
       {uploadingMedia && <p className="mx-auto mb-2 max-w-3xl text-xs text-muted-foreground" role="status">{t.chat.uploadingMedia}</p>}
       {recording && <p className="mx-auto mb-2 max-w-3xl animate-pulse text-xs text-destructive" role="status">● {t.chat.recording}</p>}
+      {replyMessage && <div className="mx-auto mb-2 flex max-w-3xl items-center gap-2 rounded-xl border-s-2 border-primary bg-muted/60 px-3 py-2 text-xs"><Reply className="size-4 shrink-0 text-primary" /><div className="min-w-0 flex-1"><p className="font-medium text-primary">{t.chat.replyTo(replyMessage.replySenderName || t.chat.reply)}</p><p className="truncate text-muted-foreground">{replyMessage.deletedAt ? t.chat.replyDeleted : replyMessage.body || replyMessage.mediaName || t.chat.document}</p></div><button type="button" onClick={onCancelReply} className="rounded-full p-1 text-muted-foreground hover:bg-background" aria-label={t.chat.cancel}><X className="size-4" /></button></div>}
       {file && (
         <div className="mx-auto mb-2 flex max-w-3xl items-center gap-2 rounded-xl border bg-muted/60 px-3 py-2 text-sm">
           {file.type.startsWith('video/') ? <FileText className="size-4 shrink-0 text-muted-foreground" /> : <ImagePlus className="size-4 shrink-0 text-muted-foreground" />}
@@ -298,4 +305,3 @@ export function MessageComposer({
     </div>
   )
 }
-

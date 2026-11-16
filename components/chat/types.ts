@@ -5,6 +5,7 @@ export type CurrentUser = {
   name: string
   username: string
   image: string | null
+  about?: string
 }
 
 export type ConversationSummary = {
@@ -36,6 +37,14 @@ export type ChatMessage = {
   messageType?: string
   payload?: Record<string, unknown>
   pending?: boolean
+  deletedAt?: string | null
+  replyTo?: number | null
+  replyBody?: string | null
+  replyDeleted?: boolean
+  replySenderName?: string | null
+  forwardedFrom?: number | null
+  starredByMe?: boolean
+  pinned?: boolean
 }
 
 export type ConversationDetail = {
@@ -43,6 +52,7 @@ export type ConversationDetail = {
     username: string | null
     name: string
     image: string | null
+    about?: string
     isGroup?: boolean
     participantCount?: number
     members?: Array<{ id: string; name: string; username: string; image: string | null }>
@@ -57,6 +67,8 @@ export type ConversationDetail = {
     isMuted: boolean
   }
   otherLastReadAt: string | null
+  otherLastDeliveredAt?: string | null
+  pinnedMessage?: { id: number; body: string; deleted: boolean; senderId: string } | null
   messages: ChatMessage[]
 }
 
@@ -131,5 +143,4 @@ export function formatDayLabel(
     day: 'numeric',
   })
 }
-
 

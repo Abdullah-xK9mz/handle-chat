@@ -38,6 +38,7 @@ export type Profile = {
   name: string
   username: string
   image: string | null
+  about: string
 }
 
 type Session = {
@@ -110,6 +111,9 @@ async function refreshSession(session: Session): Promise<Session | null> {
     },
   )
   if (!response.ok) {
+    if (response.status >= 500) {
+      throw new SupabaseError('SESSION_REFRESH_FAILED', response.status)
+    }
     localStorage.removeItem(SESSION_KEY)
     return null
   }
@@ -324,6 +328,7 @@ export async function sendChatMedia<T>(
   conversationId: number,
   file: File,
   body: string,
+  replyToId?: number | null,
 ): Promise<T> {
   if (file.size > MAX_MEDIA_SIZE) {
     throw new SupabaseError('MEDIA_TOO_LARGE', 413)
@@ -342,6 +347,7 @@ export async function sendChatMedia<T>(
       mediaPath,
       mediaType: file.type,
       mediaName: file.name.slice(0, 255),
+      replyToId: replyToId ?? null,
     })
     return result.message
   } catch (error) {
@@ -431,6 +437,7 @@ export async function chatRequest<T>(
             action: 'send-message',
             conversationId: Number(match[1]),
             body: body.body,
+            replyToId: body.replyToId ?? null,
           }
         : {
             action: 'get-messages',
@@ -440,4 +447,3 @@ export async function chatRequest<T>(
 
   return edgeRequest<T>(payload)
 }
-

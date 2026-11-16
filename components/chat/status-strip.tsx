@@ -10,7 +10,7 @@ import { errorMessage } from '@/lib/i18n/dictionaries'
 import { fetcher, type CurrentUser, type StatusEntry } from './types'
 import { UserAvatar } from './user-avatar'
 
-export function StatusStrip({ currentUser }: { currentUser: CurrentUser }) {
+export function StatusStrip({ currentUser, fullPage = false }: { currentUser: CurrentUser; fullPage?: boolean }) {
   const { t } = useI18n()
   const { data, mutate } = useSWR<{ statuses: StatusEntry[] }>('/api/statuses', fetcher, {
     refreshInterval: 15_000,
@@ -100,25 +100,26 @@ export function StatusStrip({ currentUser }: { currentUser: CurrentUser }) {
 
   return (
     <>
-      <section className="border-b px-3 py-3" aria-label={t.chat.statusTitle}>
-        <div className="flex gap-3 overflow-x-auto pb-1">
-          <button type="button" className="flex w-16 shrink-0 flex-col items-center gap-1" onClick={() => setCreating(true)}>
+      <section className={fullPage ? 'min-h-full p-4 sm:p-6' : 'border-b px-3 py-3'} aria-label={t.chat.statusTitle}>
+        {fullPage && <h2 className="mb-4 text-base font-semibold">{t.chat.statusTitle}</h2>}
+        <div className={fullPage ? 'grid grid-cols-3 gap-4 sm:grid-cols-4 md:grid-cols-3 lg:grid-cols-4' : 'flex gap-3 overflow-x-auto pb-1'}>
+          <button type="button" className={`flex ${fullPage ? 'w-full' : 'w-16 shrink-0'} flex-col items-center gap-2`} onClick={() => setCreating(true)}>
             <span className="relative rounded-full border-2 border-dashed border-primary p-0.5">
-              <UserAvatar name={currentUser.name} image={currentUser.image} className="size-11" />
+              <UserAvatar name={currentUser.name} image={currentUser.image} className={fullPage ? 'size-16' : 'size-11'} />
               <span className="absolute -bottom-1 -end-1 flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
                 <Plus className="size-3.5" />
               </span>
             </span>
-            <span className="w-full truncate text-center text-[11px]">{t.chat.myStatus}</span>
+            <span className="w-full truncate text-center text-xs">{t.chat.myStatus}</span>
           </button>
           {grouped.filter((status) => status.userId !== currentUser.id).map((status) => (
-            <button key={status.userId} type="button" className="flex w-16 shrink-0 flex-col items-center gap-1" onClick={() => void openStatus(status)}>
+            <button key={status.userId} type="button" className={`flex ${fullPage ? 'w-full' : 'w-16 shrink-0'} flex-col items-center gap-2`} onClick={() => void openStatus(status)}>
               <span className="rounded-full bg-primary p-0.5">
                 <span className="block rounded-full border-2 border-background p-0.5">
-                  <UserAvatar name={status.name} image={status.image} className="size-10" />
+                  <UserAvatar name={status.name} image={status.image} className={fullPage ? 'size-14' : 'size-10'} />
                 </span>
               </span>
-              <span className="w-full truncate text-center text-[11px]">{status.name}</span>
+              <span className="w-full truncate text-center text-xs">{status.name}</span>
             </button>
           ))}
         </div>
@@ -189,4 +190,3 @@ export function StatusStrip({ currentUser }: { currentUser: CurrentUser }) {
     </>
   )
 }
-
