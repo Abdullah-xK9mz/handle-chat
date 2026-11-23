@@ -117,7 +117,12 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   useEffect(() => {
     window.history.pushState({ handleChatHome: true }, '', window.location.href)
 
-    function handleBack() {
+    function handleBack(event: PopStateEvent) {
+      const state = event.state as { handleChatConversation?: number; handleChatHome?: boolean } | null
+      if (typeof state?.handleChatConversation === 'number') {
+        if (activeIdRef.current !== state.handleChatConversation) setActiveId(state.handleChatConversation)
+        return
+      }
       if (activeIdRef.current !== null) setActiveId(null)
       window.history.pushState({ handleChatHome: true }, '', window.location.href)
     }
@@ -242,7 +247,6 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
               key={activeId}
               conversationId={activeId}
               currentUserId={currentUser.id}
-              currentUserName={currentUser.name}
               isAdmin={currentUser.isAdmin}
               otherUserId={active?.otherUserId}
               fallbackName={active?.otherName}

@@ -35,11 +35,11 @@ import { useI18n } from '@/components/i18n-provider'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { errorMessage } from '@/lib/i18n/dictionaries'
+import { closeChatPage, pushChatPage } from '@/lib/chat-pages'
 import { chatRequest, edgeRequest, sendChatMedia } from '@/lib/supabase'
 import { setLocalContactName } from '@/lib/local-contact-names'
 import { cn } from '@/lib/utils'
 import { MessageComposer } from './message-composer'
-import { GroupAudioCall } from './group-audio-call'
 import {
   ApiError,
   fetcher,
@@ -63,7 +63,6 @@ const DEFAULT_GROUP_SETTINGS: GroupSettings = {
 type ConversationViewProps = {
   conversationId: number
   currentUserId: string
-  currentUserName: string
   isAdmin?: boolean
   otherUserId?: string
   fallbackName?: string
@@ -80,7 +79,6 @@ type ConversationViewProps = {
 export function ConversationView({
   conversationId,
   currentUserId,
-  currentUserName,
   isAdmin = false,
   otherUserId,
   fallbackName,
@@ -113,6 +111,8 @@ export function ConversationView({
   const [groupSettingsDraft, setGroupSettingsDraft] = useState<GroupSettings>(DEFAULT_GROUP_SETTINGS)
   const [savingGroupSettings, setSavingGroupSettings] = useState(false)
   const [groupMemberDraft, setGroupMemberDraft] = useState('')
+  const [groupMemberMenuId, setGroupMemberMenuId] = useState<string | null>(null)
+  const [groupMemberBusy, setGroupMemberBusy] = useState<string | null>(null)
   const [groupRequests, setGroupRequests] = useState<Array<{ id: string; profile: { id: string; name: string; username: string; image: string | null } | null }>>([])
   const [groupInviteBusy, setGroupInviteBusy] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -130,6 +130,24 @@ export function ConversationView({
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const loadingMediaRef = useRef(new Set<string>())
   const holdTimer = useRef<number | null>(null)
+
+  useEffect(() => {
+    const restorePage = (state: unknown) => {
+      const historyState = state && typeof state === 'object'
+        ? state as { handleChatPage?: string; handleChatParentPage?: string | null }
+        : {}
+      const page = historyState.handleChatPage
+      const parent = historyState.handleChatParentPage
+      setInfoOpen(page === 'conversation-details' || ((page === 'profile-photo' || page === 'media-viewer') && parent === 'conversation-details'))
+      if (page !== 'profile-photo') setImageModal(null)
+      if (page !== 'media-viewer') setMediaViewer(null)
+      if (page !== 'forward-message') setForwarding(null)
+    }
+    restorePage(window.history.state)
+    const handlePageBack = (event: PopStateEvent) => restorePage(event.state)
+    window.addEventListener('popstate', handlePageBack)
+    return () => window.removeEventListener('popstate', handlePageBack)
+  }, [])
 
   const messages = data?.messages ?? []
   const lastId = messages.at(-1)?.id
@@ -192,6 +210,23 @@ export function ConversationView({
     document.getElementById('message')?.focus()
   }
 
+  function openConversationInfo() {
+    setProfileMenuOpen(false)
+    setInfoOpen(true)
+    pushChatPage('conversation-details')
+  }
+
+  function openProfilePhoto(url: string | null | undefined) {
+    if (!url) return
+    setImageModal(url)
+    pushChatPage('profile-photo')
+  }
+
+  function openSharedMedia(url: string, type: 'image' | 'video' | 'audio') {
+    setMediaViewer({ url, type })
+    pushChatPage('media-viewer')
+  }
+
   async function copyMessage(message: ChatMessage) {
     const payload = message.payload ?? {}
     const text = message.body || message.mediaName || (Object.keys(payload).length ? JSON.stringify(payload) : '')
@@ -221,7 +256,7 @@ export function ConversationView({
     if (!forwarding || !forwardTargetId) return
     try {
       await edgeRequest({ action: 'forward-message', messageId: forwarding.id, targetConversationId: forwardTargetId })
-      setForwarding(null)
+      closeChatPage('forward-message')
       setForwardTargetId('')
       setActionNotice(t.chat.forwarded)
       onActivity()
@@ -299,6 +334,28 @@ export function ConversationView({
     document.addEventListener('pointerdown', dismiss)
     return () => document.removeEventListener('pointerdown', dismiss)
   }, [reportMenuOpen])
+
+  useEffect(() => {
+    if (!groupMemberMenuId) return
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('[data-group-member-menu]')) return
+      setGroupMemberMenuId(null)
+    }
+    document.addEventListener('pointerdown', dismiss)
+    return () => document.removeEventListener('pointerdown', dismiss)
+  }, [groupMemberMenuId])
+
+  useEffect(() => {
+    if (!profileMenuOpen) return
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('[data-profile-menu]')) return
+      setProfileMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', dismiss)
+    return () => document.removeEventListener('pointerdown', dismiss)
+  }, [profileMenuOpen])
 
   useEffect(() => {
     for (const mediaPath of new Set(
@@ -513,6 +570,25 @@ export function ConversationView({
     }
   }
 
+  async function manageGroupMember(member: { id: string; name: string }, operation: 'promote' | 'demote' | 'remove') {
+    if (groupMemberBusy) return
+    if (operation === 'remove' && !window.confirm(t.chat.removeGroupMemberConfirm(member.name))) return
+    setGroupMemberBusy(member.id)
+    setSendError(null)
+    try {
+      await edgeRequest({ action: 'manage-group-member', conversationId, userId: member.id, operation })
+      setGroupMemberMenuId(null)
+      await mutate()
+      onActivity()
+      setActionNotice(operation === 'remove' ? t.chat.groupMemberRemoved : t.chat.groupAdminUpdated)
+    } catch (caught) {
+      const code = typeof caught === 'object' && caught && 'code' in caught ? caught.code : 'GENERIC'
+      setSendError(errorMessage(t, code))
+    } finally {
+      setGroupMemberBusy(null)
+    }
+  }
+
   async function saveGroupSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (savingGroupSettings) return
@@ -596,7 +672,7 @@ export function ConversationView({
         >
           <ArrowLeft className="rtl:rotate-180" />
         </Button>
-        <button type="button" className="flex min-w-0 items-center gap-3 rounded-xl text-start hover:opacity-85" onClick={() => setInfoOpen(true)} aria-label={isGroup ? t.chat.groupDetails : t.chat.profileDetails}>
+        <button type="button" className="flex min-w-0 items-center gap-3 rounded-xl text-start hover:opacity-85" onClick={openConversationInfo} aria-label={isGroup ? t.chat.groupDetails : t.chat.profileDetails}>
           {isGroup ? <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-muted text-primary"><Users className="size-5" /></span> : <UserAvatar name={name} image={image} />}
           <span className="min-w-0">
             <span className="block truncate text-sm font-semibold">{name}</span>
@@ -614,7 +690,6 @@ export function ConversationView({
           </span>
         </button>
         <div className="ms-auto flex shrink-0 items-center gap-0.5">
-          {isGroup && <GroupAudioCall conversationId={conversationId} currentUserId={currentUserId} currentUserName={currentUserName} groupName={name} />}
           <Button variant="ghost" size="icon" onClick={() => { setSearchOpen((open) => !open); setSearchResults([]) }} aria-label={t.chat.searchConversation} title={t.chat.searchConversation}>
             <Search />
           </Button>
@@ -798,7 +873,7 @@ export function ConversationView({
                             <div data-message-action-menu className={cn('fixed inset-x-3 bottom-[calc(5rem+env(safe-area-inset-bottom))] z-50 grid max-h-[min(60dvh,22rem)] gap-0.5 overflow-y-auto rounded-xl border bg-popover p-1.5 text-popover-foreground shadow-xl md:absolute md:inset-x-auto md:end-1 md:min-w-48', messageMenuAbove ? 'md:bottom-full md:mb-2' : 'md:top-8')}>
                               <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setReply(message); setOpenMessageActions(null) }}><Reply className="size-3.5" />{t.chat.reply}</button>
                               <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { void copyMessage(message); setOpenMessageActions(null) }}><Copy className="size-3.5" />{t.chat.copyMessage}</button>
-                              <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setForwarding(message); setOpenMessageActions(null) }}><Forward className="size-3.5" />{t.chat.forwardMessage}</button>
+                              <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setForwarding(message); setOpenMessageActions(null); pushChatPage('forward-message') }}><Forward className="size-3.5" />{t.chat.forwardMessage}</button>
                               <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { void runMessageAction('star', message); setOpenMessageActions(null) }}><Star className={cn('size-3.5', message.starredByMe && 'fill-current text-primary')} />{message.starredByMe ? t.chat.unstarMessage : t.chat.starMessage}</button>
                               <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { void runMessageAction('pin', message); setOpenMessageActions(null) }}><Pin className="size-3.5" />{message.pinned ? t.chat.unpinMessage : t.chat.pinMessage}</button>
                               {(mine || isAdmin) && <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs text-destructive hover:bg-destructive/10" onClick={() => { void runMessageAction('delete', message); setOpenMessageActions(null) }}><Trash2 className="size-3.5" />{t.chat.deleteMessage}</button>}
@@ -832,7 +907,7 @@ export function ConversationView({
                                 aria-label={message.mediaName ?? t.chat.videoMessage}
                               />
                             ) : (
-                              <button type="button" className="block cursor-zoom-in" onClick={() => setImageModal(mediaUrl)} aria-label={t.chat.photoMessage}>
+                              <button type="button" className="block cursor-zoom-in" onClick={() => openProfilePhoto(mediaUrl)} aria-label={t.chat.photoMessage}>
                                 <img
                                   src={mediaUrl}
                                   alt={message.mediaName ?? t.chat.photoMessage}
@@ -970,11 +1045,12 @@ export function ConversationView({
       )}
 
       {infoOpen && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-labelledby="conversation-info-title" onClick={() => setInfoOpen(false)}>
-          <section className="flex max-h-[92dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-3xl border bg-background shadow-2xl sm:rounded-3xl" onClick={(event) => event.stopPropagation()}>
+        <div className="fixed inset-0 z-50 bg-background" role="dialog" aria-modal="true" aria-labelledby="conversation-info-title">
+          <section className="flex h-full w-full flex-col overflow-hidden bg-background">
             <header className="flex items-center gap-2 border-b px-4 py-3">
+              <Button type="button" variant="ghost" size="icon" aria-label={t.chat.back} onClick={() => closeChatPage('conversation-details')}><ArrowLeft className="rtl:rotate-180" /></Button>
               <h2 id="conversation-info-title" className="flex-1 font-semibold">{isGroup ? t.chat.groupDetails : t.chat.profileDetails}</h2>
-              <div className="relative">
+              <div className="relative" data-profile-menu>
                 <Button type="button" variant="ghost" size="icon" aria-label={t.chat.profileMenu} onClick={() => setProfileMenuOpen((open) => !open)}><MoreHorizontal /></Button>
                 {profileMenuOpen && (
                   <div className="absolute end-0 top-full z-10 min-w-52 rounded-xl border bg-popover p-1.5 shadow-xl">
@@ -983,7 +1059,6 @@ export function ConversationView({
                   </div>
                 )}
               </div>
-              <Button type="button" variant="ghost" size="icon" aria-label={t.chat.back} onClick={() => { setProfileMenuOpen(false); setInfoOpen(false) }}><X /></Button>
             </header>
 
             <div className="min-h-0 flex-1 overflow-y-auto">
@@ -991,7 +1066,7 @@ export function ConversationView({
                 {isGroup ? (
                   <span className="mb-3 flex size-24 items-center justify-center rounded-full bg-muted text-primary"><Users className="size-10" /></span>
                 ) : (
-                  <button type="button" aria-label={t.chat.photoMessage} className="mb-3 rounded-full" onClick={() => image && setImageModal(image)}>
+                  <button type="button" aria-label={t.chat.photoMessage} className="mb-3 rounded-full" onClick={() => openProfilePhoto(image)}>
                     <UserAvatar name={name} image={image} className="size-24 text-2xl" />
                   </button>
                 )}
@@ -1030,8 +1105,8 @@ export function ConversationView({
                   <h3 className="mb-3 text-sm font-semibold">{t.chat.groupMembers} · {t.chat.memberCount(data?.other?.participantCount ?? 0)}</h3>
                   <ul className="grid gap-1">
                     {groupMembers.map((member) => (
-                      <li key={member.id}>
-                        <button type="button" className="flex w-full items-center gap-3 rounded-xl p-2 text-start hover:bg-muted" onClick={async () => {
+                      <li key={member.id} className="flex items-center gap-1 rounded-xl">
+                        <button type="button" className="flex min-w-0 flex-1 items-center gap-3 rounded-xl p-2 text-start hover:bg-muted" onClick={async () => {
                           if (!member.username) return
                           try {
                             const result = await chatRequest<{ id: number }>('/api/conversations', {
@@ -1048,8 +1123,15 @@ export function ConversationView({
                           <UserAvatar name={member.name} image={member.image} className="size-10" />
                           <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{member.name}</span><span className="block truncate text-xs text-muted-foreground" dir="ltr">@{member.username}</span></span>
                           {member.role === 'admin' && <span className="rounded-full bg-primary/10 px-2 py-1 text-[10px] text-primary">{t.chat.adminRole}</span>}
-                          <span className="text-xs text-primary">{t.chat.openContactChat}</span>
+                          <span className="hidden text-xs text-primary sm:inline">{t.chat.openContactChat}</span>
                         </button>
+                        {isGroupAdmin && <div className="relative shrink-0" data-group-member-menu>
+                          <Button type="button" variant="ghost" size="icon" disabled={groupMemberBusy !== null} aria-label={t.chat.manageMember} onClick={() => setGroupMemberMenuId((current) => current === member.id ? null : member.id)}><MoreHorizontal /></Button>
+                          {groupMemberMenuId === member.id && <div className="absolute end-0 top-full z-20 min-w-52 rounded-xl border bg-popover p-1.5 shadow-xl">
+                            <button type="button" className="flex w-full items-center rounded-lg px-3 py-2 text-start text-sm hover:bg-muted disabled:opacity-60" disabled={groupMemberBusy !== null} onClick={() => void manageGroupMember(member, member.role === 'admin' ? 'demote' : 'promote')}>{member.role === 'admin' ? t.chat.removeGroupAdmin : t.chat.makeGroupAdmin}</button>
+                            <button type="button" className="flex w-full items-center rounded-lg px-3 py-2 text-start text-sm text-destructive hover:bg-destructive/10 disabled:opacity-60" disabled={groupMemberBusy !== null} onClick={() => void manageGroupMember(member, 'remove')}>{t.chat.removeGroupMember}</button>
+                          </div>}
+                        </div>}
                       </li>
                     ))}
                   </ul>
@@ -1117,7 +1199,7 @@ export function ConversationView({
                     const isVideo = message.mediaType?.startsWith('video/') || message.messageType === 'video'
                     const isAudio = message.mediaType?.startsWith('audio/') || message.messageType === 'voice'
                     return (
-                      <button key={message.id} type="button" disabled={!url} className="relative flex size-20 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-muted disabled:opacity-50" onClick={() => url && setMediaViewer({ url, type: isAudio ? 'audio' : isVideo ? 'video' : 'image' })} aria-label={isAudio ? t.chat.recordVoice : isVideo ? t.chat.videoMessage : t.chat.photoMessage}>
+                      <button key={message.id} type="button" disabled={!url} className="relative flex size-20 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-muted disabled:opacity-50" onClick={() => url && openSharedMedia(url, isAudio ? 'audio' : isVideo ? 'video' : 'image')} aria-label={isAudio ? t.chat.recordVoice : isVideo ? t.chat.videoMessage : t.chat.photoMessage}>
                         {url && !isVideo && !isAudio ? <img src={url} alt="" className="size-full object-cover" loading="lazy" /> : isAudio ? <FileAudio className="size-6" /> : isVideo ? <Video className="size-6" /> : <ImageIcon className="size-6" />}
                       </button>
                     )
@@ -1150,29 +1232,44 @@ export function ConversationView({
       )}
 
       {mediaViewer && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 p-3" role="dialog" aria-modal="true" aria-label={mediaViewer.type === 'video' ? t.chat.videoMessage : t.chat.photoMessage} onClick={() => setMediaViewer(null)}>
-          <Button type="button" variant="ghost" size="icon" className="absolute end-3 top-3 text-white hover:bg-white/15" aria-label={t.chat.back} onClick={() => setMediaViewer(null)}><X /></Button>
-          {mediaViewer.type === 'video' ? <video src={mediaViewer.url} controls autoPlay playsInline className="max-h-[94dvh] max-w-[96vw]" onClick={(event) => event.stopPropagation()} /> : mediaViewer.type === 'audio' ? <audio src={mediaViewer.url} controls autoPlay className="max-w-[96vw]" onClick={(event) => event.stopPropagation()} /> : <img src={mediaViewer.url} alt={t.chat.photoMessage} className="max-h-[94dvh] max-w-[96vw] object-contain" onClick={(event) => event.stopPropagation()} />}
+        <div className="fixed inset-0 z-[60] flex flex-col bg-black text-white" role="dialog" aria-modal="true" aria-label={mediaViewer.type === 'video' ? t.chat.videoMessage : t.chat.photoMessage}>
+          <header className="flex h-14 shrink-0 items-center gap-3 border-b border-white/10 px-3">
+            <Button type="button" variant="ghost" size="icon" className="text-white hover:bg-white/15" aria-label={t.chat.back} onClick={() => closeChatPage('media-viewer')}><ArrowLeft className="rtl:rotate-180" /></Button>
+            <h2 className="font-medium">{mediaViewer.type === 'video' ? t.chat.videoMessage : mediaViewer.type === 'audio' ? t.chat.recordVoice : t.chat.photoMessage}</h2>
+          </header>
+          <div className="flex min-h-0 flex-1 items-center justify-center p-3 sm:p-6">
+            {mediaViewer.type === 'video' ? <video src={mediaViewer.url} controls autoPlay playsInline className="max-h-full max-w-full" /> : mediaViewer.type === 'audio' ? <audio src={mediaViewer.url} controls autoPlay className="w-full max-w-xl" /> : <img src={mediaViewer.url} alt={t.chat.photoMessage} className="max-h-full max-w-full object-contain" />}
+          </div>
         </div>
       )}
 
       {imageModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-3" role="dialog" aria-modal="true" aria-label={t.chat.photoMessage} onClick={() => setImageModal(null)}>
-          <Button type="button" variant="ghost" size="icon" className="absolute end-3 top-3 text-white hover:bg-white/15" aria-label={t.chat.back} onClick={() => setImageModal(null)}><X /></Button>
-          <img src={imageModal} alt={t.chat.photoMessage} className="max-h-[94dvh] max-w-[96vw] object-contain" onClick={(event) => event.stopPropagation()} />
+        <div className="fixed inset-0 z-[60] flex flex-col bg-black text-white" role="dialog" aria-modal="true" aria-label={t.chat.photoMessage}>
+          <header className="flex h-14 shrink-0 items-center gap-3 border-b border-white/10 px-3">
+            <Button type="button" variant="ghost" size="icon" className="text-white hover:bg-white/15" aria-label={t.chat.back} onClick={() => closeChatPage('profile-photo')}><ArrowLeft className="rtl:rotate-180" /></Button>
+            <h2 className="font-medium">{t.chat.photoMessage}</h2>
+          </header>
+          <div className="flex min-h-0 flex-1 items-center justify-center p-3 sm:p-6">
+            <img src={imageModal} alt={t.chat.photoMessage} className="max-h-full max-w-full object-contain" />
+          </div>
         </div>
       )}
 
       {forwarding && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4" role="dialog" aria-modal="true" aria-labelledby="forward-dialog-title">
-          <section className="w-full max-w-sm rounded-2xl bg-background p-5 shadow-2xl">
-            <header className="mb-4 flex items-center gap-2"><h2 id="forward-dialog-title" className="flex-1 font-semibold">{t.chat.forwardMessage}</h2><Button type="button" variant="ghost" size="icon" onClick={() => setForwarding(null)} aria-label={t.chat.cancel}><X /></Button></header>
+        <div className="fixed inset-0 z-50 flex flex-col bg-background" role="dialog" aria-modal="true" aria-labelledby="forward-dialog-title">
+          <section className="flex h-full w-full flex-col">
+            <header className="flex h-14 shrink-0 items-center gap-2 border-b px-3">
+              <Button type="button" variant="ghost" size="icon" onClick={() => closeChatPage('forward-message')} aria-label={t.chat.back}><ArrowLeft className="rtl:rotate-180" /></Button>
+              <h2 id="forward-dialog-title" className="flex-1 font-semibold">{t.chat.forwardMessage}</h2>
+            </header>
+            <div className="flex flex-1 flex-col p-4 sm:p-6">
             <label htmlFor="forward-target" className="mb-2 block text-sm">{t.chat.chooseConversation}</label>
             <select id="forward-target" value={forwardTargetId} onChange={(event) => setForwardTargetId(event.target.value ? Number(event.target.value) : '')} className="h-11 w-full rounded-xl border bg-background px-3 text-sm">
               <option value="">{t.chat.chooseConversation}</option>
               {availableConversations.filter((conversation) => conversation.id !== conversationId).map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.otherName}</option>)}
             </select>
-            <div className="mt-4 flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setForwarding(null)}>{t.chat.cancel}</Button><Button type="button" disabled={!forwardTargetId} onClick={() => void forwardMessage()}>{t.chat.forwardMessage}</Button></div>
+            <div className="mt-auto flex justify-end gap-2 pt-6"><Button type="button" variant="outline" onClick={() => closeChatPage('forward-message')}>{t.chat.cancel}</Button><Button type="button" disabled={!forwardTargetId} onClick={() => void forwardMessage()}>{t.chat.forwardMessage}</Button></div>
+            </div>
           </section>
         </div>
       )}

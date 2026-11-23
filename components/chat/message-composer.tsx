@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import {
+  ArrowLeft,
   CalendarPlus,
   FileAudio,
   FileText,
@@ -19,6 +20,7 @@ import {
 } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
 import { Button } from '@/components/ui/button'
+import { closeChatPage, pushChatPage } from '@/lib/chat-pages'
 import type { ChatMessage } from './types'
 
 const MAX_LENGTH = 4000
@@ -77,6 +79,23 @@ export function MessageComposer({
   const streamRef = useRef<MediaStream | null>(null)
   const chunksRef = useRef<BlobPart[]>([])
   const canSend = (value.trim().length > 0 || file !== null) && !pending
+
+  useEffect(() => {
+    const handlePageBack = (event: PopStateEvent) => {
+      const page = event.state && typeof event.state === 'object'
+        ? (event.state as { handleChatPage?: string }).handleChatPage
+        : undefined
+      if (page !== 'structured-message') setDialogType(null)
+    }
+    window.addEventListener('popstate', handlePageBack)
+    return () => window.removeEventListener('popstate', handlePageBack)
+  }, [])
+
+  function openStructured(type: StructuredType) {
+    setDialogType(type)
+    setMenuOpen(false)
+    pushChatPage('structured-message')
+  }
 
   useEffect(() => {
     if (!menuOpen) return
@@ -231,7 +250,7 @@ export function MessageComposer({
     setLocalError(null)
     try {
       if (await onSendStructured(dialogType, payload)) {
-        setDialogType(null)
+        closeChatPage('structured-message')
         setContactName('')
         setContactPhone('')
         setContactEmail('')
@@ -273,9 +292,9 @@ export function MessageComposer({
               <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => pickAttachment('media')}><ImagePlus className="size-4" />{t.chat.attachMedia}</button>
               <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => pickAttachment('document')}><FileText className="size-4" />{t.chat.document}</button>
               <button type="button" disabled={sharingLocation} className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted disabled:opacity-60" onClick={() => void shareLocation()}><MapPin className="size-4" />{sharingLocation ? t.chat.gettingLocation : t.chat.location}</button>
-              <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setDialogType('contact'); setMenuOpen(false) }}><UserRound className="size-4" />{t.chat.contact}</button>
-              <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setDialogType('poll'); setMenuOpen(false) }}><ListPlus className="size-4" />{t.chat.poll}</button>
-              <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setDialogType('event'); setMenuOpen(false) }}><CalendarPlus className="size-4" />{t.chat.event}</button>
+              <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => openStructured('contact')}><UserRound className="size-4" />{t.chat.contact}</button>
+              <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => openStructured('poll')}><ListPlus className="size-4" />{t.chat.poll}</button>
+              <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => openStructured('event')}><CalendarPlus className="size-4" />{t.chat.event}</button>
             </div>
           )}
         </div>
@@ -306,12 +325,13 @@ export function MessageComposer({
       </form>
 
       {dialogType && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/55 p-4" role="dialog" aria-modal="true" aria-labelledby="structured-title">
-          <form onSubmit={(event) => void submitStructured(event)} className="w-full max-w-md rounded-2xl bg-background p-5 shadow-2xl">
-            <header className="mb-4 flex items-center gap-2">
+        <div className="fixed inset-0 z-50 flex flex-col bg-background" role="dialog" aria-modal="true" aria-labelledby="structured-title">
+          <form onSubmit={(event) => void submitStructured(event)} className="flex min-h-full w-full flex-col overflow-y-auto">
+            <header className="sticky top-0 flex h-14 shrink-0 items-center gap-2 border-b bg-background px-3">
+              <Button type="button" size="icon" variant="ghost" onClick={() => closeChatPage('structured-message')} aria-label={t.chat.back}><ArrowLeft className="rtl:rotate-180" /></Button>
               <h2 id="structured-title" className="flex-1 font-semibold">{t.chat[dialogType]}</h2>
-              <Button type="button" size="icon" variant="ghost" onClick={() => setDialogType(null)} aria-label={t.chat.back}><X /></Button>
             </header>
+            <div className="flex w-full flex-1 flex-col gap-3 p-4 sm:p-6">
             {dialogType === 'contact' ? (
               <div className="grid gap-3">
                 <input required value={contactName} onChange={(event) => setContactName(event.target.value)} placeholder={t.chat.contactName} className="h-10 rounded-xl border bg-muted px-3 text-sm" />
@@ -334,7 +354,8 @@ export function MessageComposer({
                 <textarea value={eventDetails} onChange={(event) => setEventDetails(event.target.value)} placeholder={t.chat.eventDetails} className="min-h-20 rounded-xl border bg-muted p-3 text-sm" />
               </div>
             )}
-            <Button type="submit" disabled={pending} className="mt-4 w-full">{pending ? t.chat.sending : t.chat.send}</Button>
+            <Button type="submit" disabled={pending} className="mt-auto w-full">{pending ? t.chat.sending : t.chat.send}</Button>
+            </div>
           </form>
         </div>
       )}

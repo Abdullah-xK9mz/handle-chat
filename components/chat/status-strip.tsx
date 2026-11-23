@@ -1,12 +1,13 @@
 'use client'
 
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import useSWR from 'swr'
-import { ArrowLeft, ArrowRight, Plus, Trash2, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Plus, Trash2 } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
 import { Button } from '@/components/ui/button'
 import { edgeRequest, uploadStatusMedia } from '@/lib/supabase'
 import { errorMessage } from '@/lib/i18n/dictionaries'
+import { closeChatPage, pushChatPage } from '@/lib/chat-pages'
 import { fetcher, type CurrentUser, type StatusEntry } from './types'
 import { UserAvatar } from './user-avatar'
 
@@ -23,6 +24,25 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
   const [error, setError] = useState<string | null>(null)
   const [viewUrl, setViewUrl] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  function startStatusEditor() {
+    setCreating(true)
+    pushChatPage('status-editor')
+  }
+
+  useEffect(() => {
+    const restorePage = (state: unknown) => {
+      const page = state && typeof state === 'object'
+        ? (state as { handleChatPage?: string }).handleChatPage
+        : undefined
+      if (page !== 'status-editor') setCreating(false)
+      if (page !== 'status-viewer') setViewing(null)
+    }
+    restorePage(window.history.state)
+    const handlePageBack = (event: PopStateEvent) => restorePage(event.state)
+    window.addEventListener('popstate', handlePageBack)
+    return () => window.removeEventListener('popstate', handlePageBack)
+  }, [])
 
   const statuses = data?.statuses ?? []
   const myStatuses = statuses.filter((status) => status.userId === currentUser.id)
@@ -55,7 +75,7 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
       })
       setStatusText('')
       setFile(null)
-      setCreating(false)
+      closeChatPage('status-editor')
       await mutate()
     } catch (caught) {
       const code = typeof caught === 'object' && caught && 'code' in caught ? caught.code : 'GENERIC'
@@ -65,7 +85,8 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
     }
   }
 
-  async function openStatus(status: StatusEntry) {
+  async function openStatus(status: StatusEntry, addHistory = false) {
+    if (addHistory) pushChatPage('status-viewer')
     setViewing(status)
     setViewUrl(null)
     if (!status.mediaPath) return
@@ -87,7 +108,7 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
     setBusy(true)
     try {
       await edgeRequest({ action: 'delete-status', statusId: viewing.id })
-      setViewing(null)
+      closeChatPage('status-viewer')
       await mutate()
     } finally {
       setBusy(false)
@@ -109,7 +130,7 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
             <button
               type="button"
               className="flex flex-col items-center gap-2"
-              onClick={() => latestOwnStatus ? void openStatus(latestOwnStatus) : setCreating(true)}
+              onClick={() => latestOwnStatus ? void openStatus(latestOwnStatus, true) : startStatusEditor()}
               aria-label={latestOwnStatus ? `${t.chat.myStatus}: ${latestOwnStatus.body || latestOwnStatus.mediaName || t.chat.statusTitle}` : t.chat.addStatus}
             >
               <span className={`rounded-full p-0.5 ${latestOwnStatus ? 'bg-primary' : 'border-2 border-dashed border-primary'}`}>
@@ -120,7 +141,7 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
             <button
               type="button"
               className="absolute top-10 end-0 flex size-6 items-center justify-center rounded-full border-2 border-background bg-primary text-primary-foreground shadow-sm"
-              onClick={() => setCreating(true)}
+              onClick={startStatusEditor}
               aria-label={t.chat.addStatus}
               title={t.chat.addStatus}
             >
@@ -128,7 +149,7 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
             </button>
           </div>
           {grouped.filter((status) => status.userId !== currentUser.id).map((status) => (
-            <button key={status.userId} type="button" className={`flex ${fullPage ? 'w-full' : 'w-16 shrink-0'} flex-col items-center gap-2`} onClick={() => void openStatus(status)}>
+            <button key={status.userId} type="button" className={`flex ${fullPage ? 'w-full' : 'w-16 shrink-0'} flex-col items-center gap-2`} onClick={() => void openStatus(status, true)}>
               <span className="rounded-full bg-primary p-0.5">
                 <span className="block rounded-full border-2 border-background p-0.5">
                   <UserAvatar name={status.name} image={status.image} className={fullPage ? 'size-14' : 'size-10'} />
@@ -141,18 +162,19 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
       </section>
 
       {creating && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-labelledby="status-dialog-title">
-          <section className="w-full max-w-md rounded-2xl bg-background p-5 shadow-2xl">
-            <header className="mb-4 flex items-center gap-2">
+        <div className="fixed inset-0 z-50 flex flex-col bg-background" role="dialog" aria-modal="true" aria-labelledby="status-dialog-title">
+          <section className="flex h-full w-full flex-col">
+            <header className="flex h-14 shrink-0 items-center gap-2 border-b px-3">
+              <Button type="button" variant="ghost" size="icon" onClick={() => closeChatPage('status-editor')} aria-label={t.chat.back}><ArrowLeft className="rtl:rotate-180" /></Button>
               <h2 id="status-dialog-title" className="flex-1 font-semibold">{t.chat.addStatus}</h2>
-              <Button type="button" variant="ghost" size="icon" onClick={() => setCreating(false)} aria-label={t.chat.back}><X /></Button>
             </header>
+            <div className="flex flex-1 flex-col p-4 sm:p-6">
             <textarea
               value={statusText}
               maxLength={700}
               onChange={(event) => setStatusText(event.target.value)}
               placeholder={t.chat.statusPlaceholder}
-              className="min-h-28 w-full resize-y rounded-xl border bg-muted p-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="min-h-40 w-full flex-1 resize-y rounded-xl border bg-muted p-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
             />
             <input
               ref={fileRef}
@@ -174,6 +196,7 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
             <Button type="button" className="mt-4 w-full" disabled={busy || (!statusText.trim() && !file)} onClick={() => void publishStatus()}>
               {busy ? t.chat.uploadingMedia : t.chat.publishStatus}
             </Button>
+            </div>
           </section>
         </div>
       )}
@@ -187,7 +210,7 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
             <UserAvatar name={viewing.name} image={viewing.image} />
             <span className="min-w-0 flex-1 truncate text-sm font-medium">{viewing.name}</span>
             {viewing.userId === currentUser.id && <Button type="button" variant="ghost" size="icon" className="text-white hover:bg-white/15" onClick={() => void removeStatus()} aria-label={t.chat.deleteStatus}><Trash2 /></Button>}
-            <Button type="button" variant="ghost" size="icon" className="text-white hover:bg-white/15" onClick={() => setViewing(null)} aria-label={t.chat.back}><X /></Button>
+            <Button type="button" variant="ghost" size="icon" className="text-white hover:bg-white/15" onClick={() => closeChatPage('status-viewer')} aria-label={t.chat.back}><ArrowLeft className="rtl:rotate-180" /></Button>
           </header>
           <Button type="button" variant="ghost" size="icon" className="absolute start-2 z-10 text-white hover:bg-white/15" onClick={() => moveStatus(-1)} aria-label={t.chat.previousStatus}><ArrowLeft className="rtl:rotate-180" /></Button>
           <div className="flex max-h-full w-full max-w-2xl flex-col items-center justify-center gap-4 pt-16">

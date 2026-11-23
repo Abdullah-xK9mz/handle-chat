@@ -4,18 +4,6 @@ export const SUPABASE_URL = 'https://nvujfvmnquiiirytxnwr.supabase.co'
 export const SUPABASE_PUBLISHABLE_KEY =
   'sb_publishable_9rUSTLd0IF1jMrLZbuyasw_u0JQHOlu'
 
-export async function createRealtimeClient() {
-  const { createClient } = await import('@supabase/supabase-js')
-  return createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
-    auth: {
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-      persistSession: false,
-    },
-    accessToken: async () => (await getSession())?.access_token ?? null,
-  })
-}
-
 const FUNCTION_URL = `${SUPABASE_URL}/functions/v1/handle-chat`
 const SESSION_KEY = 'handle.supabase.session.v1'
 const DEVICE_KEY = 'handle.device.installation.v2'

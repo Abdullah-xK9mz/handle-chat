@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Camera, Check, LogOut, QrCode, Save, ScanLine, X } from 'lucide-react'
+import { ArrowLeft, Camera, Check, LogOut, QrCode, Save, ScanLine } from 'lucide-react'
 import { LanguageToggle } from '@/components/language-toggle'
 import { UserAvatar } from '@/components/chat/user-avatar'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -16,6 +16,7 @@ import {
   type Profile,
 } from '@/lib/supabase'
 import { errorMessage } from '@/lib/i18n/dictionaries'
+import { closeChatPage, pushChatPage } from '@/lib/chat-pages'
 import { getNativeApp, pickNativeFileAsFile } from '@/lib/native-app'
 
 export function SettingsView({
@@ -68,6 +69,20 @@ export function SettingsView({
   useEffect(() => () => {
     scannerRunning.current = false
     streamRef.current?.getTracks().forEach((track) => track.stop())
+  }, [])
+
+  useEffect(() => {
+    const handlePageBack = (event: PopStateEvent) => {
+      const page = event.state && typeof event.state === 'object'
+        ? (event.state as { handleChatPage?: string }).handleChatPage
+        : undefined
+      if (page !== 'qr-scanner') {
+        stopScanner()
+        setScannerOpen(false)
+      }
+    }
+    window.addEventListener('popstate', handlePageBack)
+    return () => window.removeEventListener('popstate', handlePageBack)
   }, [])
 
   useEffect(() => {
@@ -290,7 +305,7 @@ export function SettingsView({
           <div className="mt-4 flex flex-col items-center gap-4 sm:flex-row">
             {shareUrl && <img src={`https://api.qrserver.com/v1/create-qr-code/?size=220x220&format=svg&margin=8&data=${encodeURIComponent(shareUrl)}`} width={180} height={180} alt={t.settings.qrTitle} className="rounded-xl bg-white p-2" />}
             <div className="flex w-full flex-col gap-2 sm:w-auto">
-              <Button type="button" variant="outline" className="gap-2" onClick={() => { setScannerMessage(null); setScannerOpen(true) }}><ScanLine className="size-4" />{t.settings.scanQr}</Button>
+              <Button type="button" variant="outline" className="gap-2" onClick={() => { setScannerMessage(null); setScannerOpen(true); pushChatPage('qr-scanner') }}><ScanLine className="size-4" />{t.settings.scanQr}</Button>
               <Button type="button" variant="ghost" className="gap-2" onClick={() => void copyProfileLink()} disabled={!shareUrl}><Check className="size-4" />{copiedLink ? t.chat.copiedMessage : t.settings.copyProfileLink}</Button>
             </div>
           </div>
@@ -440,16 +455,18 @@ export function SettingsView({
       </div>
 
       {scannerOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-labelledby="qr-scanner-title">
-          <section className="w-full max-w-md rounded-2xl bg-background p-5 shadow-2xl">
-            <header className="mb-3 flex items-center gap-2"><h2 id="qr-scanner-title" className="flex-1 font-semibold">{t.settings.scanQr}</h2><Button type="button" variant="ghost" size="icon" onClick={() => { stopScanner(); setScannerOpen(false) }} aria-label={t.chat.cancel}><X /></Button></header>
-            <p className="mb-3 text-sm text-muted-foreground">{t.settings.scanQrHint}</p>
-            <video ref={videoRef} playsInline muted className={`max-h-64 w-full rounded-xl bg-black object-cover ${scanning ? 'block' : 'hidden'}`} />
-            {scannerMessage && <p role="status" className="my-3 text-sm text-muted-foreground">{scannerMessage}</p>}
-            <div className="mt-3 flex flex-wrap gap-2">
+        <div className="fixed inset-0 z-50 flex flex-col bg-background" role="dialog" aria-modal="true" aria-labelledby="qr-scanner-title">
+          <section className="flex h-full w-full flex-col">
+            <header className="flex h-14 shrink-0 items-center gap-2 border-b px-3"><Button type="button" variant="ghost" size="icon" onClick={() => closeChatPage('qr-scanner')} aria-label={t.chat.back}><ArrowLeft className="rtl:rotate-180" /></Button><h2 id="qr-scanner-title" className="flex-1 font-semibold">{t.settings.scanQr}</h2></header>
+            <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4 sm:p-6">
+            <p className="text-sm text-muted-foreground">{t.settings.scanQrHint}</p>
+            <video ref={videoRef} playsInline muted className={`mx-auto max-h-[60dvh] w-full max-w-2xl flex-1 rounded-xl bg-black object-cover ${scanning ? 'block' : 'hidden'}`} />
+            {scannerMessage && <p role="status" className="text-sm text-muted-foreground">{scannerMessage}</p>}
+            <div className="mt-auto flex flex-wrap gap-2">
               {scanning ? <Button type="button" variant="outline" onClick={stopScanner}>{t.settings.stopScanner}</Button> : <Button type="button" variant="outline" onClick={() => void startScanner()}>{t.settings.startScanner}</Button>}
               <input value={scannerUsername} onChange={(event) => setScannerUsername(event.target.value)} placeholder={t.auth.usernamePlaceholder} dir="ltr" className="h-10 min-w-0 flex-1 rounded-xl border bg-background px-3 text-sm" />
               <Button type="button" onClick={() => openScannedValue(scannerUsername)} disabled={!scannerUsername.trim()}>{t.settings.openChat}</Button>
+            </div>
             </div>
           </section>
         </div>

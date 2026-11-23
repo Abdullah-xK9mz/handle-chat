@@ -924,6 +924,58 @@ async function handle(request: Request) {
         if (!roleUpdate.ok) throw new ChatError("GENERIC", 500);
         return json({ id });
       }
+      case "manage-group-member": {
+        const conversationId = validConversationId(body.conversationId);
+        const group = await requireGroupAdmin(conversationId, user.id);
+        const targetId = validUserId(body.userId);
+        const operation = body.operation;
+        if (!(["promote", "demote", "remove"] as const).includes(operation as "promote" | "demote" | "remove") || targetId === user.id) {
+          throw new ChatError("INVALID_MESSAGE", 400);
+        }
+        const targetResponse = await serviceRequest(
+          `/rest/v1/conversation_members?select=userId,role&conversationId=eq.${conversationId}&userId=eq.${encodeURIComponent(targetId)}&limit=1`,
+        );
+        if (!targetResponse.ok) throw new ChatError("GENERIC", 500);
+        const target = (await targetResponse.json())?.[0] as { userId: string; role: string } | undefined;
+        if (!target) throw new ChatError("NOT_FOUND", 404);
+        if (targetId === group.conversation.createdBy && operation !== "promote") {
+          throw new ChatError("GROUP_PERMISSION_DENIED", 403);
+        }
+        if ((operation === "demote" || operation === "remove") && target.role === "admin") {
+          const adminsResponse = await serviceRequest(
+            `/rest/v1/conversation_members?select=userId&conversationId=eq.${conversationId}&role=eq.admin`,
+          );
+          if (!adminsResponse.ok) throw new ChatError("GENERIC", 500);
+          const admins = new Set((await adminsResponse.json()).map((member: { userId: string }) => member.userId));
+          if (group.conversation.createdBy !== targetId) admins.add(group.conversation.createdBy);
+          admins.delete(targetId);
+          if (admins.size === 0) throw new ChatError("GROUP_PERMISSION_DENIED", 403);
+        }
+        if (operation === "remove") {
+          const removed = await serviceRequest(
+            `/rest/v1/conversation_members?conversationId=eq.${conversationId}&userId=eq.${encodeURIComponent(targetId)}`,
+            { method: "DELETE" },
+          );
+          if (!removed.ok) throw new ChatError("GENERIC", 500);
+          const requestCleanup = await serviceRequest(
+            `/rest/v1/group_member_requests?conversation_id=eq.${conversationId}&user_id=eq.${encodeURIComponent(targetId)}`,
+            { method: "DELETE" },
+          );
+          if (!requestCleanup.ok) throw new ChatError("GENERIC", 500);
+          return json({ ok: true, removed: true });
+        }
+        const role = operation === "promote" ? "admin" : "member";
+        const updated = await serviceRequest(
+          `/rest/v1/conversation_members?conversationId=eq.${conversationId}&userId=eq.${encodeURIComponent(targetId)}`,
+          {
+            method: "PATCH",
+            headers: { Prefer: "return=minimal" },
+            body: JSON.stringify({ role }),
+          },
+        );
+        if (!updated.ok) throw new ChatError("GENERIC", 500);
+        return json({ ok: true, role });
+      }
       case "set-group-settings": {
         const conversationId = validConversationId(body.conversationId);
         const group = await groupContext(conversationId, user.id);
