@@ -5,7 +5,7 @@ import useSWR, { preload } from 'swr'
 import { MessageCircle } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
 import { cn } from '@/lib/utils'
-import { chatRequest, edgeRequest } from '@/lib/supabase'
+import { chatRequest, createRealtimeClient, edgeRequest } from '@/lib/supabase'
 import { getNativeApp } from '@/lib/native-app'
 import { CONTACT_NAMES_CHANGED, getLocalContactNames } from '@/lib/local-contact-names'
 import { ConversationView } from './conversation-view'
@@ -31,6 +31,33 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   const conversations = data?.conversations ?? []
   const active = conversations.find((c) => c.id === activeId) ?? null
   const seenMessagesRef = useRef<Map<number, string> | null>(null)
+
+  useEffect(() => {
+    let disposed = false
+    let realtimeClient: Awaited<ReturnType<typeof createRealtimeClient>> | null = null
+
+    void createRealtimeClient().then(async (client) => {
+      if (disposed) {
+        await client.removeAllChannels()
+        return
+      }
+      realtimeClient = client
+      await client.realtime.setAuth()
+      client.channel(`user-updates:${currentUser.id}`, { config: { private: true } })
+        .on('broadcast', { event: 'chat-updated' }, ({ payload }) => {
+          const conversationId = Number(payload?.conversationId)
+          if (!Number.isSafeInteger(conversationId) || conversationId <= 0) return
+          void mutate()
+          window.dispatchEvent(new CustomEvent('handle-chat-updated', { detail: { conversationId } }))
+        })
+        .subscribe()
+    }).catch(() => undefined)
+
+    return () => {
+      disposed = true
+      if (realtimeClient) void realtimeClient.removeAllChannels()
+    }
+  }, [currentUser.id, mutate])
 
   useEffect(() => {
     const refreshNames = () => setContactNames(getLocalContactNames())
@@ -189,6 +216,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
     prefetchConversation(id)
     setActiveId(id)
     window.history.pushState({ handleChatConversation: id }, '', window.location.href)
+    void mutate()
   }
 
   function prefetchConversation(id: number) {

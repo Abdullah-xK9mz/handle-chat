@@ -339,6 +339,39 @@ async function upsertGroupRequests(conversationId: number, userIds: string[], re
   if (!response.ok) throw new ChatError("GENERIC", 500);
 }
 
+async function recordGroupMembersAddedNotice(conversationId: number, actorId: string, addedUserIds: string[]) {
+  const uniqueIds = [...new Set(addedUserIds)].filter((id) => id !== actorId);
+  if (!uniqueIds.length) return;
+  try {
+    await rpc("chat_record_group_members_added", {
+      p_actor_id: actorId,
+      p_conversation_id: conversationId,
+      p_added_user_ids: uniqueIds,
+    });
+  } catch {
+    // The membership change is already committed; keep it successful if the optional notice fails.
+    console.error("Could not record the group member notice.");
+  }
+}
+
+async function recordGroupMembersAddedByUsername(conversationId: number, actorId: string, usernames: string[]) {
+  if (!usernames.length) return;
+  try {
+    const response = await serviceRequest(
+      `/rest/v1/profiles?select=id&username=in.(${usernames.join(",")})`,
+    );
+    if (!response.ok) throw new ChatError("GENERIC", 500);
+    const profiles = await response.json();
+    await recordGroupMembersAddedNotice(
+      conversationId,
+      actorId,
+      profiles.map((profile: { id: string }) => profile.id),
+    );
+  } catch {
+    console.error("Could not resolve group invitees for the notice.");
+  }
+}
+
 async function requireAdmin(userId: string) {
   const response = await serviceRequest(
     `/rest/v1/profiles?select=role&id=eq.${encodeURIComponent(userId)}`,
@@ -923,6 +956,7 @@ async function handle(request: Request) {
           },
         );
         if (!roleUpdate.ok) throw new ChatError("GENERIC", 500);
+        await recordGroupMembersAddedByUsername(id, user.id, usernames);
         return json({ id });
       }
       case "manage-group-member": {
@@ -1004,7 +1038,10 @@ async function handle(request: Request) {
         const existing = new Set((await existingResponse.json()).map((member: { userId: string }) => member.userId));
         const newIds = targetIds.filter((id: string) => !existing.has(id));
         if (group.settings.requireApproval) await upsertGroupRequests(conversationId, newIds, user.id);
-        else await insertGroupMembers(conversationId, newIds);
+        else {
+          await insertGroupMembers(conversationId, newIds);
+          await recordGroupMembersAddedNotice(conversationId, user.id, newIds);
+        }
         return json({ added: group.settings.requireApproval ? 0 : newIds.length, pending: group.settings.requireApproval ? newIds.length : 0 });
       }
       case "list-group-requests": {
@@ -1048,6 +1085,9 @@ async function handle(request: Request) {
           },
         );
         if (!update.ok) throw new ChatError("GENERIC", 500);
+        if (decision === "approved") {
+          await recordGroupMembersAddedNotice(conversationId, user.id, [requests[0].user_id]);
+        }
         return json({ ok: true });
       }
       case "create-group-invite": {

@@ -149,6 +149,15 @@ export function ConversationView({
     return () => window.removeEventListener('popstate', handlePageBack)
   }, [])
 
+  useEffect(() => {
+    const handleChatUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ conversationId?: number }>).detail
+      if (detail?.conversationId === conversationId) void mutate()
+    }
+    window.addEventListener('handle-chat-updated', handleChatUpdated)
+    return () => window.removeEventListener('handle-chat-updated', handleChatUpdated)
+  }, [conversationId, mutate])
+
   const messages = data?.messages ?? []
   const lastId = messages.at(-1)?.id
   const profileName = data?.other?.name ?? fallbackName ?? t.chat.conversationFallback
@@ -808,6 +817,9 @@ export function ConversationView({
                 startsAt?: string
                 location?: string
                 details?: string
+                systemEvent?: string
+                actorName?: string
+                addedMembers?: Array<{ id: string; name: string }>
               }
               const messageType = message.messageType ?? (
                 message.mediaType?.startsWith('audio/') ? 'voice'
@@ -815,6 +827,9 @@ export function ConversationView({
                     : message.mediaType?.startsWith('image/') ? 'image'
                       : message.mediaType ? 'document' : 'text'
               )
+              const isMembersAddedEvent = messageType === 'event' && payload.systemEvent === 'members_added'
+              const addedMemberNames = (payload.addedMembers ?? []).map((member) => member.name).filter(Boolean)
+              const youWereAdded = (payload.addedMembers ?? []).some((member) => member.id === currentUserId)
               const mediaUrl = message.mediaPath ? mediaUrls[message.mediaPath]?.url : undefined
 
               return (
@@ -830,15 +845,17 @@ export function ConversationView({
                     id={`message-${message.id}`}
                     className={cn(
                       'flex',
-                      mine ? 'justify-end' : 'justify-start',
+                      isMembersAddedEvent ? 'justify-center' : mine ? 'justify-end' : 'justify-start',
                       !groupedWithPrev && 'mt-2',
                     )}
                     onContextMenu={(event) => {
+                      if (isMembersAddedEvent) return
                       if (message.deletedAt || message.pending) return
                       event.preventDefault()
                       showMessageActions(message.id)
                     }}
                     onTouchStart={() => {
+                      if (isMembersAddedEvent) return
                       if (!message.deletedAt && !message.pending) startMessageHold(message.id)
                     }}
                     onTouchEnd={clearMessageHold}
@@ -846,15 +863,17 @@ export function ConversationView({
                   >
                     <div
                       className={cn(
-                        'relative max-w-[88%] rounded-2xl px-3 py-1.5 pt-7 shadow-xs md:max-w-[72%]',
-                        mine
+                        'relative max-w-[88%] rounded-2xl px-3 py-1.5 shadow-xs md:max-w-[72%]',
+                        isMembersAddedEvent
+                          ? 'max-w-[90%] rounded-full bg-background/90 px-3 py-1 text-center text-xs text-muted-foreground shadow-sm md:max-w-[80%]'
+                          : mine
                           ? 'bg-bubble-out text-bubble-out-foreground'
                           : 'bg-bubble-in text-bubble-in-foreground',
-                        !groupedWithPrev &&
+                        !isMembersAddedEvent && !groupedWithPrev &&
                           (mine ? 'rounded-se-md' : 'rounded-ss-md'),
                       )}
                     >
-                      {!message.deletedAt && !message.pending && (
+                      {!isMembersAddedEvent && !message.deletedAt && !message.pending && (
                         <>
                           <button
                             type="button"
@@ -881,14 +900,14 @@ export function ConversationView({
                           )}
                         </>
                       )}
-                      {message.replyTo && (
+                      {!isMembersAddedEvent && message.replyTo && (
                         <button type="button" className="mb-1 w-full rounded-lg border-s-2 border-primary/70 bg-background/50 px-2 py-1 text-start" onClick={() => document.getElementById(`message-${message.replyTo}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}>
                           <span className="block truncate text-[11px] font-semibold text-primary">{message.replySenderName || t.chat.reply}</span>
                           <span className="block truncate text-xs opacity-75">{message.replyDeleted ? t.chat.replyDeleted : message.replyBody || t.chat.replyDeleted}</span>
                         </button>
                       )}
-                      {message.forwardedFrom && <p className="mb-1 flex items-center gap-1 text-[11px] italic opacity-75"><Forward className="size-3" />{t.chat.forwarded}</p>}
-                      {message.mediaType && (
+                      {!isMembersAddedEvent && message.forwardedFrom && <p className="mb-1 flex items-center gap-1 text-[11px] italic opacity-75"><Forward className="size-3" />{t.chat.forwarded}</p>}
+                      {!isMembersAddedEvent && message.mediaType && (
                         <div className="mb-1 min-w-44 overflow-hidden rounded-xl">
                           {mediaUrl ? (
                             messageType === 'voice' ? (
@@ -924,14 +943,14 @@ export function ConversationView({
                           )}
                         </div>
                       )}
-                      {messageType === 'location' && (
+                      {!isMembersAddedEvent && messageType === 'location' && (
                         <div className="mb-1 rounded-xl bg-background/60 p-3 text-sm">
                           <p className="font-medium">{t.chat.location}</p>
                           <p className="mt-1 text-xs opacity-75">{Number(payload.latitude).toFixed(5)}, {Number(payload.longitude).toFixed(5)}</p>
                           <a className="mt-2 inline-block underline" href={`https://www.google.com/maps?q=${payload.latitude},${payload.longitude}`} target="_blank" rel="noreferrer">{t.chat.openMap}</a>
                         </div>
                       )}
-                      {messageType === 'contact' && (
+                      {!isMembersAddedEvent && messageType === 'contact' && (
                         <div className="mb-1 min-w-48 rounded-xl bg-background/60 p-3 text-sm">
                           <p className="font-medium">{payload.name}</p>
                           {payload.phone && <p className="mt-1 text-xs" dir="ltr">{payload.phone}</p>}
@@ -939,14 +958,18 @@ export function ConversationView({
                         </div>
                       )}
                       {messageType === 'event' && (
-                        <div className="mb-1 min-w-52 rounded-xl bg-background/60 p-3 text-sm">
-                          <p className="font-semibold">{payload.title}</p>
-                          {payload.startsAt && <time className="mt-1 block text-xs text-muted-foreground">{new Date(payload.startsAt).toLocaleString(locale)}</time>}
-                          {payload.location && <p className="mt-1 text-xs">{payload.location}</p>}
-                          {payload.details && <p className="mt-2 whitespace-pre-wrap text-xs">{payload.details}</p>}
-                        </div>
+                        isMembersAddedEvent ? (
+                          <p>{t.chat.membersAddedNotice(payload.actorName ?? '', addedMemberNames, youWereAdded)}</p>
+                        ) : (
+                          <div className="mb-1 min-w-52 rounded-xl bg-background/60 p-3 text-sm">
+                            <p className="font-semibold">{payload.title}</p>
+                            {payload.startsAt && <time className="mt-1 block text-xs text-muted-foreground">{new Date(payload.startsAt).toLocaleString(locale)}</time>}
+                            {payload.location && <p className="mt-1 text-xs">{payload.location}</p>}
+                            {payload.details && <p className="mt-2 whitespace-pre-wrap text-xs">{payload.details}</p>}
+                          </div>
+                        )
                       )}
-                      {messageType === 'poll' && (
+                      {!isMembersAddedEvent && messageType === 'poll' && (
                         <div className="mb-1 min-w-52 rounded-xl bg-background/60 p-3 text-sm">
                           <p className="mb-2 font-semibold">{payload.question}</p>
                           {(payload.options ?? []).map((option, optionIndex) => (
@@ -969,7 +992,7 @@ export function ConversationView({
                           ))}
                         </div>
                       )}
-                      {message.deletedAt ? (
+                      {!isMembersAddedEvent && (message.deletedAt ? (
                         <p className="py-1 text-sm italic opacity-70">{t.chat.deletedMessage}</p>
                       ) : message.body ? (
                         <p
@@ -978,17 +1001,17 @@ export function ConversationView({
                         >
                           {message.body}
                         </p>
-                      ) : null}
+                      ) : null)}
                       <p
                         className={cn(
                           'mt-0.5 flex items-center justify-end gap-1 text-[11px]',
-                          mine ? 'opacity-80' : 'text-muted-foreground',
+                          isMembersAddedEvent ? 'justify-center text-muted-foreground' : mine ? 'opacity-80' : 'text-muted-foreground',
                         )}
                       >
                         <time dateTime={message.createdAt}>
                           {formatMessageTime(message.createdAt, locale)}
                         </time>
-                        {mine &&
+                        {!isMembersAddedEvent && mine &&
                           (message.pending ? (
                             <Clock className="size-3" aria-label={t.chat.sending} />
                           ) : read ? (

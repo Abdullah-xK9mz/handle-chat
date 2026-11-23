@@ -135,6 +135,9 @@ const en = {
     invalidGroupInvite: 'This group invite is invalid or has expired.',
     groupInvitePending: 'The join request is waiting for an admin.',
     groupMemberAdded: 'Member added to the group.',
+    membersAddedNotice: (actor: string, members: string[], youWereAdded: boolean) => youWereAdded
+      ? `${actor} added you to the group.`
+      : `${actor} added ${members.join(', ')} to the group.`,
     groupMemberApprovalPending: 'The request is waiting for admin approval.',
     groupSettings: 'Group permissions',
     addMembersPermission: 'Who can add members?',
@@ -453,6 +456,9 @@ const ar: Dictionary = {
     invalidGroupInvite: 'رابط دعوة المجموعة غير صالح أو انتهت صلاحيته.',
     groupInvitePending: 'طلب الانضمام ينتظر موافقة مشرف المجموعة.',
     groupMemberAdded: 'تمت إضافة العضو إلى المجموعة.',
+    membersAddedNotice: (actor: string, members: string[], youWereAdded: boolean) => youWereAdded
+      ? `أضافك ${actor} إلى المجموعة.`
+      : `أضاف ${actor} ${members.join('، ')} إلى المجموعة.`,
     groupMemberApprovalPending: 'طلب الإضافة ينتظر موافقة المشرف.',
     groupSettings: 'صلاحيات المجموعة',
     addMembersPermission: 'من يستطيع إضافة أعضاء؟',
