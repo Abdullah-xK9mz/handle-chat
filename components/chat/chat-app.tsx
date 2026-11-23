@@ -242,6 +242,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
               key={activeId}
               conversationId={activeId}
               currentUserId={currentUser.id}
+              currentUserName={currentUser.name}
               isAdmin={currentUser.isAdmin}
               otherUserId={active?.otherUserId}
               fallbackName={active?.otherName}

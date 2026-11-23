@@ -39,6 +39,7 @@ import { chatRequest, edgeRequest, sendChatMedia } from '@/lib/supabase'
 import { setLocalContactName } from '@/lib/local-contact-names'
 import { cn } from '@/lib/utils'
 import { MessageComposer } from './message-composer'
+import { GroupAudioCall } from './group-audio-call'
 import {
   ApiError,
   fetcher,
@@ -62,6 +63,7 @@ const DEFAULT_GROUP_SETTINGS: GroupSettings = {
 type ConversationViewProps = {
   conversationId: number
   currentUserId: string
+  currentUserName: string
   isAdmin?: boolean
   otherUserId?: string
   fallbackName?: string
@@ -78,6 +80,7 @@ type ConversationViewProps = {
 export function ConversationView({
   conversationId,
   currentUserId,
+  currentUserName,
   isAdmin = false,
   otherUserId,
   fallbackName,
@@ -611,6 +614,7 @@ export function ConversationView({
           </span>
         </button>
         <div className="ms-auto flex shrink-0 items-center gap-0.5">
+          {isGroup && <GroupAudioCall conversationId={conversationId} currentUserId={currentUserId} currentUserName={currentUserName} groupName={name} />}
           <Button variant="ghost" size="icon" onClick={() => { setSearchOpen((open) => !open); setSearchResults([]) }} aria-label={t.chat.searchConversation} title={t.chat.searchConversation}>
             <Search />
           </Button>
