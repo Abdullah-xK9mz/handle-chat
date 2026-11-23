@@ -7,6 +7,7 @@ import { useI18n } from '@/components/i18n-provider'
 import { cn } from '@/lib/utils'
 import { chatRequest, edgeRequest } from '@/lib/supabase'
 import { getNativeApp } from '@/lib/native-app'
+import { CONTACT_NAMES_CHANGED, getLocalContactNames } from '@/lib/local-contact-names'
 import { ConversationView } from './conversation-view'
 import { Sidebar, type SidebarSection } from './sidebar'
 import {
@@ -20,6 +21,8 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   const [activeId, setActiveId] = useState<number | null>(null)
   const activeIdRef = useRef<number | null>(null)
   const [section, setSection] = useState<SidebarSection>('chats')
+  const [contactNames, setContactNames] = useState<Record<string, string>>({})
+  const [joinNotice, setJoinNotice] = useState<string | null>(null)
   const deepLinkHandled = useRef(false)
   const { data, error, isLoading, mutate } = useSWR<{
     conversations: ConversationSummary[]
@@ -28,6 +31,17 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   const conversations = data?.conversations ?? []
   const active = conversations.find((c) => c.id === activeId) ?? null
   const seenMessagesRef = useRef<Map<number, string> | null>(null)
+
+  useEffect(() => {
+    const refreshNames = () => setContactNames(getLocalContactNames())
+    refreshNames()
+    window.addEventListener(CONTACT_NAMES_CHANGED, refreshNames)
+    window.addEventListener('storage', refreshNames)
+    return () => {
+      window.removeEventListener(CONTACT_NAMES_CHANGED, refreshNames)
+      window.removeEventListener('storage', refreshNames)
+    }
+  }, [])
 
   useEffect(() => {
     const viewport = window.visualViewport
@@ -64,9 +78,26 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   useEffect(() => {
     if (deepLinkHandled.current) return
     deepLinkHandled.current = true
-    const username = new URLSearchParams(window.location.search).get('chat')
-    if (!username) return
+    const params = new URLSearchParams(window.location.search)
+    const username = params.get('chat')
+    const groupInvite = params.get('groupInvite')
+    if (!username && !groupInvite) return
     window.history.replaceState(window.history.state, '', window.location.pathname)
+    if (groupInvite) {
+      void edgeRequest<{ id: number; status: 'member' | 'pending' }>({ action: 'join-group-invite', token: groupInvite })
+        .then(({ id, status }) => {
+          if (status === 'pending') {
+            setJoinNotice(t.chat.groupInvitePending)
+            return
+          }
+          setSection('chats')
+          setActiveId(id)
+          window.history.pushState({ handleChatConversation: id }, '', window.location.href)
+          void mutate()
+        })
+        .catch(() => setJoinNotice(t.chat.invalidGroupInvite))
+      return
+    }
     void chatRequest<{ id: number }>('/api/conversations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -77,7 +108,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
       window.history.pushState({ handleChatConversation: id }, '', window.location.href)
       void mutate()
     }).catch(() => undefined)
-  }, [mutate])
+  }, [mutate, t.chat.groupInvitePending, t.chat.invalidGroupInvite])
 
   useEffect(() => {
     activeIdRef.current = activeId
@@ -177,6 +208,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
 
   return (
     <div className="fixed inset-x-0 z-10 w-screen overflow-hidden bg-background" style={{ top: 'var(--chat-viewport-top, 0px)', height: 'var(--chat-viewport-height, 100dvh)' }}>
+      {joinNotice && <div role="status" className="absolute inset-x-4 top-3 z-50 mx-auto max-w-md rounded-xl border bg-background px-4 py-3 text-center text-sm shadow-lg">{joinNotice}</div>}
       <div className="mx-auto flex h-full w-full max-w-none overflow-hidden bg-background">
         <aside
           className={cn(
@@ -187,6 +219,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
           <Sidebar
             currentUser={currentUser}
             conversations={conversations}
+            contactNames={contactNames}
             isLoading={isLoading}
             error={error}
             activeId={activeId}
@@ -212,11 +245,13 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
               isAdmin={currentUser.isAdmin}
               otherUserId={active?.otherUserId}
               fallbackName={active?.otherName}
+              displayNameOverride={active?.otherUserId ? contactNames[active.otherUserId] : undefined}
               fallbackUsername={active?.otherUsername ?? undefined}
               fallbackImage={active?.otherImage ?? undefined}
               fallbackBlockedByOther={active?.otherBlockedMe}
               onBack={() => window.history.back()}
               onActivity={() => mutate()}
+              onOpenConversation={openConversation}
               availableConversations={conversations}
             />
           ) : (

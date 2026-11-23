@@ -13,20 +13,30 @@ import {
   Copy,
   Forward,
   Flag,
+  FileAudio,
+  FileText,
+  Image as ImageIcon,
+  Link2,
   MoreHorizontal,
+  Pencil,
   Pin,
   Reply,
   Search,
+  Share2,
   ShieldCheck,
   Star,
   Trash2,
+  UserRoundPlus,
+  Users,
   X,
+  Video,
 } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { errorMessage } from '@/lib/i18n/dictionaries'
 import { chatRequest, edgeRequest, sendChatMedia } from '@/lib/supabase'
+import { setLocalContactName } from '@/lib/local-contact-names'
 import { cn } from '@/lib/utils'
 import { MessageComposer } from './message-composer'
 import {
@@ -37,8 +47,17 @@ import {
   type ChatMessage,
   type ConversationDetail,
   type ConversationSummary,
+  type GroupSettings,
 } from './types'
 import { UserAvatar } from './user-avatar'
+
+const DEFAULT_GROUP_SETTINGS: GroupSettings = {
+  addMembers: 'admins',
+  shareInvite: 'admins',
+  requireApproval: false,
+  sendMessages: 'all',
+  editGroup: 'admins',
+}
 
 type ConversationViewProps = {
   conversationId: number
@@ -46,11 +65,13 @@ type ConversationViewProps = {
   isAdmin?: boolean
   otherUserId?: string
   fallbackName?: string
+  displayNameOverride?: string
   fallbackUsername?: string
   fallbackImage?: string
   fallbackBlockedByOther?: boolean
   onBack: () => void
   onActivity: () => void
+  onOpenConversation: (id: number) => void
   availableConversations: ConversationSummary[]
 }
 
@@ -60,11 +81,13 @@ export function ConversationView({
   isAdmin = false,
   otherUserId,
   fallbackName,
+  displayNameOverride,
   fallbackUsername,
   fallbackImage,
   fallbackBlockedByOther = false,
   onBack,
   onActivity,
+  onOpenConversation,
   availableConversations,
 }: ConversationViewProps) {
   const { t, locale } = useI18n()
@@ -75,6 +98,20 @@ export function ConversationView({
   const [sendError, setSendError] = useState<string | null>(null)
   const [mediaUrls, setMediaUrls] = useState<Record<string, { url: string; expiresAt: number }>>({})
   const [imageModal, setImageModal] = useState<string | null>(null)
+  const [mediaViewer, setMediaViewer] = useState<{ url: string; type: 'image' | 'video' | 'audio' } | null>(null)
+  const [infoOpen, setInfoOpen] = useState(false)
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false)
+  const [editingContactName, setEditingContactName] = useState(false)
+  const [contactNameDraft, setContactNameDraft] = useState(displayNameOverride ?? '')
+  const [newGroupName, setNewGroupName] = useState('')
+  const [creatingContactGroup, setCreatingContactGroup] = useState(false)
+  const [existingGroupId, setExistingGroupId] = useState<number | ''>('')
+  const [groupNameDraft, setGroupNameDraft] = useState('')
+  const [groupSettingsDraft, setGroupSettingsDraft] = useState<GroupSettings>(DEFAULT_GROUP_SETTINGS)
+  const [savingGroupSettings, setSavingGroupSettings] = useState(false)
+  const [groupMemberDraft, setGroupMemberDraft] = useState('')
+  const [groupRequests, setGroupRequests] = useState<Array<{ id: string; profile: { id: string; name: string; username: string; image: string | null } | null }>>([])
+  const [groupInviteBusy, setGroupInviteBusy] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<Array<{ id: number; body: string; createdAt: string }>>([])
@@ -93,16 +130,34 @@ export function ConversationView({
 
   const messages = data?.messages ?? []
   const lastId = messages.at(-1)?.id
-  const name =
-    data?.other?.name ?? fallbackName ?? t.chat.conversationFallback
+  const profileName = data?.other?.name ?? fallbackName ?? t.chat.conversationFallback
+  const name = !data?.other?.isGroup
+    ? displayNameOverride || profileName
+    : profileName
   const username = data?.other?.username ?? fallbackUsername
   const isBlockedByMe = data?.other?.isBlockedByMe ?? false
   const isBlockedByOther = data?.other?.isBlockedByOther ?? fallbackBlockedByOther
   const image = isBlockedByOther ? null : data?.other ? data.other.image : fallbackImage
   const isGroup = data?.other?.isGroup ?? false
+  const isGroupAdmin = data?.conversation?.isGroupAdmin ?? false
   const isBlocked = data?.other?.isBlocked ?? (isBlockedByMe || isBlockedByOther)
   const isMuted = data?.conversation?.isMuted ?? false
   const messageRequestStatus = data?.conversation?.messageRequestStatus
+
+  useEffect(() => {
+    if (!infoOpen) return
+    setGroupSettingsDraft(data?.conversation?.groupSettings ?? DEFAULT_GROUP_SETTINGS)
+    setGroupNameDraft(data?.conversation?.name ?? '')
+  }, [infoOpen, data?.conversation?.id])
+
+  useEffect(() => {
+    if (!infoOpen || !isGroup || !isGroupAdmin) return
+    let active = true
+    void edgeRequest<{ requests: typeof groupRequests }>({ action: 'list-group-requests', conversationId })
+      .then((result) => { if (active) setGroupRequests(result.requests) })
+      .catch(() => { if (active) setGroupRequests([]) })
+    return () => { active = false }
+  }, [conversationId, infoOpen, isGroup, isGroupAdmin])
   const otherReadAt = data?.otherLastReadAt
     ? new Date(data.otherLastReadAt).getTime()
     : 0
@@ -372,6 +427,160 @@ export function ConversationView({
     }
   }
 
+  async function shareContact() {
+    if (!username) return
+    const link = new URL(window.location.href)
+    link.search = ''
+    link.hash = ''
+    link.searchParams.set('chat', username)
+    const text = `${name} (@${username})\n${link.toString()}`
+    try {
+      if (navigator.share) await navigator.share({ title: name, text, url: link.toString() })
+      else {
+        await navigator.clipboard.writeText(text)
+        setActionNotice(t.chat.copiedMessage)
+      }
+    } catch {
+      // A dismissed native share sheet does not need an error message.
+    }
+  }
+
+  function saveContactName() {
+    if (!otherUserId) return
+    setLocalContactName(otherUserId, contactNameDraft)
+    setEditingContactName(false)
+  }
+
+  async function createGroupWithContact(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!username || !newGroupName.trim() || creatingContactGroup) return
+    setCreatingContactGroup(true)
+    setSendError(null)
+    try {
+      const result = await edgeRequest<{ id: number }>({
+        action: 'create-group',
+        name: newGroupName.trim(),
+        usernames: [username],
+      })
+      setInfoOpen(false)
+      setNewGroupName('')
+      onActivity()
+      onOpenConversation(result.id)
+    } catch {
+      setSendError(t.errors.GENERIC)
+    } finally {
+      setCreatingContactGroup(false)
+    }
+  }
+
+  async function addContactToExistingGroup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!username || !existingGroupId) return
+    try {
+      const result = await edgeRequest<{ added: number; pending: number }>({
+        action: 'add-group-members',
+        conversationId: existingGroupId,
+        usernames: [username],
+      })
+      setActionNotice(result.pending ? t.chat.groupMemberApprovalPending : t.chat.groupMemberAdded)
+      setInfoOpen(false)
+      onActivity()
+      onOpenConversation(existingGroupId)
+    } catch (err) {
+      const code = typeof err === 'object' && err && 'code' in err ? String(err.code) : 'GENERIC'
+      setSendError(errorMessage(t, code))
+    }
+  }
+
+  async function addGroupMembers(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const usernames = groupMemberDraft.split(/[\s,;]+/).map((value) => value.trim()).filter(Boolean)
+    if (!usernames.length) return
+    try {
+      const result = await edgeRequest<{ added: number; pending: number }>({
+        action: 'add-group-members', conversationId, usernames,
+      })
+      setGroupMemberDraft('')
+      setActionNotice(result.pending ? t.chat.groupMemberApprovalPending : t.chat.groupMemberAdded)
+      await mutate()
+      onActivity()
+    } catch (err) {
+      const code = typeof err === 'object' && err && 'code' in err ? String(err.code) : 'GENERIC'
+      setSendError(errorMessage(t, code))
+    }
+  }
+
+  async function saveGroupSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (savingGroupSettings) return
+    setSavingGroupSettings(true)
+    try {
+      const result = await edgeRequest<{ groupSettings: GroupSettings; name: string }>({
+        action: 'set-group-settings', conversationId,
+        settings: groupSettingsDraft,
+        name: groupNameDraft,
+      })
+      setGroupSettingsDraft(result.groupSettings)
+      setGroupNameDraft(result.name)
+      setActionNotice(t.chat.groupSettingsSaved)
+      await mutate()
+      onActivity()
+    } catch (err) {
+      const code = typeof err === 'object' && err && 'code' in err ? String(err.code) : 'GENERIC'
+      setSendError(errorMessage(t, code))
+    } finally {
+      setSavingGroupSettings(false)
+    }
+  }
+
+  async function shareGroupInvite() {
+    setGroupInviteBusy(true)
+    try {
+      const invite = await edgeRequest<{ token: string }>({ action: 'create-group-invite', conversationId })
+      const url = new URL(window.location.href)
+      url.search = ''
+      url.searchParams.set('groupInvite', invite.token)
+      if (navigator.share) await navigator.share({ title: name, text: t.chat.groupInviteText(name), url: url.toString() })
+      else {
+        await navigator.clipboard.writeText(url.toString())
+        setActionNotice(t.chat.groupInviteCopied)
+      }
+    } catch (err) {
+      const code = typeof err === 'object' && err && 'code' in err ? String(err.code) : 'GENERIC'
+      setSendError(errorMessage(t, code))
+    } finally {
+      setGroupInviteBusy(false)
+    }
+  }
+
+  async function reviewGroupRequest(requestId: string, decision: 'approve' | 'reject') {
+    try {
+      await edgeRequest({ action: 'review-group-request', conversationId, requestId, decision })
+      const result = await edgeRequest<{ requests: typeof groupRequests }>({ action: 'list-group-requests', conversationId })
+      setGroupRequests(result.requests)
+      await mutate()
+      onActivity()
+    } catch (err) {
+      const code = typeof err === 'object' && err && 'code' in err ? String(err.code) : 'GENERIC'
+      setSendError(errorMessage(t, code))
+    }
+  }
+
+  const groupMembers = (data?.other?.members ?? []).filter((member) => member.id !== currentUserId)
+  const sharedMedia = messages.filter((message) =>
+    Boolean(message.mediaPath) &&
+    (message.messageType === 'image' || message.messageType === 'video' || message.messageType === 'voice' ||
+      message.mediaType?.startsWith('image/') || message.mediaType?.startsWith('video/') || message.mediaType?.startsWith('audio/')),
+  )
+  const sharedDocuments = messages.filter((message) =>
+    Boolean(message.mediaPath) &&
+    (message.messageType === 'document' || (!message.mediaType?.startsWith('image/') &&
+      !message.mediaType?.startsWith('video/') && !message.mediaType?.startsWith('audio/'))),
+  )
+  const sharedLinks = messages.flatMap((message) =>
+    [...(message.body.matchAll(/https?:\/\/[^\s<>()]+/g) ?? [])].map(([url]) => ({ url, messageId: message.id })),
+  ).slice(-100).reverse()
+
   return (
     <>
       <header className="flex items-center gap-3 border-b bg-background px-3 py-2.5 md:px-4">
@@ -384,21 +593,23 @@ export function ConversationView({
         >
           <ArrowLeft className="rtl:rotate-180" />
         </Button>
-        <UserAvatar name={name} image={image} />
-        <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold">{name}</h2>
-          {isGroup ? (
-            <p className="truncate text-xs text-muted-foreground">
-              {t.chat.memberCount(data?.other?.participantCount ?? 0)}
-            </p>
-          ) : data?.other?.about ? (
-            <p className="truncate text-xs text-muted-foreground">{data.other.about}</p>
-          ) : username && (
-            <p className="truncate text-xs text-muted-foreground" dir="ltr">
-              <span className="inline-block">@{username}</span>
-            </p>
-          )}
-        </div>
+        <button type="button" className="flex min-w-0 items-center gap-3 rounded-xl text-start hover:opacity-85" onClick={() => setInfoOpen(true)} aria-label={isGroup ? t.chat.groupDetails : t.chat.profileDetails}>
+          {isGroup ? <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-muted text-primary"><Users className="size-5" /></span> : <UserAvatar name={name} image={image} />}
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-semibold">{name}</span>
+            {isGroup ? (
+              <span className="block truncate text-xs text-muted-foreground">
+                {t.chat.memberCount(data?.other?.participantCount ?? 0)}
+              </span>
+            ) : data?.other?.about ? (
+              <span className="block truncate text-xs text-muted-foreground">{data.other.about}</span>
+            ) : username && (
+              <span className="block truncate text-xs text-muted-foreground" dir="ltr">
+                <span className="inline-block">@{username}</span>
+              </span>
+            )}
+          </span>
+        </button>
         <div className="ms-auto flex shrink-0 items-center gap-0.5">
           <Button variant="ghost" size="icon" onClick={() => { setSearchOpen((open) => !open); setSearchResults([]) }} aria-label={t.chat.searchConversation} title={t.chat.searchConversation}>
             <Search />
@@ -519,7 +730,12 @@ export function ConversationView({
                 location?: string
                 details?: string
               }
-              const messageType = message.messageType ?? 'text'
+              const messageType = message.messageType ?? (
+                message.mediaType?.startsWith('audio/') ? 'voice'
+                  : message.mediaType?.startsWith('video/') ? 'video'
+                    : message.mediaType?.startsWith('image/') ? 'image'
+                      : message.mediaType ? 'document' : 'text'
+              )
               const mediaUrl = message.mediaPath ? mediaUrls[message.mediaPath]?.url : undefined
 
               return (
@@ -622,12 +838,9 @@ export function ConversationView({
                               </button>
                             )
                           ) : (
-                            <div className="flex min-h-20 items-center justify-center bg-black/5 px-5 py-4 text-xs text-muted-foreground">
-                              {message.pending
-                                ? t.chat.uploadingMedia
-                                : message.mediaType.startsWith('video/')
-                                  ? t.chat.videoMessage
-                                  : t.chat.photoMessage}
+                            <div className="flex min-h-16 items-center gap-2 bg-black/5 px-4 py-3 text-xs text-muted-foreground">
+                              {message.pending ? <Clock className="size-4 shrink-0" /> : messageType === 'voice' ? <FileAudio className="size-4 shrink-0" /> : messageType === 'document' ? <FileText className="size-4 shrink-0" /> : messageType === 'video' ? <Video className="size-4 shrink-0" /> : <ImageIcon className="size-4 shrink-0" />}
+                              <span className="min-w-0 truncate">{message.pending ? t.chat.uploadingMedia : messageType === 'voice' ? t.chat.recordVoice : messageType === 'document' ? message.mediaName ?? t.chat.document : messageType === 'video' ? t.chat.videoMessage : t.chat.photoMessage}</span>
                             </div>
                           )}
                         </div>
@@ -750,6 +963,193 @@ export function ConversationView({
           }}
           error={sendError}
         />
+      )}
+
+      {infoOpen && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-labelledby="conversation-info-title" onClick={() => setInfoOpen(false)}>
+          <section className="flex max-h-[92dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-3xl border bg-background shadow-2xl sm:rounded-3xl" onClick={(event) => event.stopPropagation()}>
+            <header className="flex items-center gap-2 border-b px-4 py-3">
+              <h2 id="conversation-info-title" className="flex-1 font-semibold">{isGroup ? t.chat.groupDetails : t.chat.profileDetails}</h2>
+              <div className="relative">
+                <Button type="button" variant="ghost" size="icon" aria-label={t.chat.profileMenu} onClick={() => setProfileMenuOpen((open) => !open)}><MoreHorizontal /></Button>
+                {profileMenuOpen && (
+                  <div className="absolute end-0 top-full z-10 min-w-52 rounded-xl border bg-popover p-1.5 shadow-xl">
+                    {!isGroup && username && <button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setProfileMenuOpen(false); void shareContact() }}><Share2 className="size-4" />{t.chat.shareContact}</button>}
+                    {!isGroup && otherUserId && <button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setProfileMenuOpen(false); setContactNameDraft(displayNameOverride ?? ''); setEditingContactName(true) }}><Pencil className="size-4" />{t.chat.editLocalName}</button>}
+                  </div>
+                )}
+              </div>
+              <Button type="button" variant="ghost" size="icon" aria-label={t.chat.back} onClick={() => { setProfileMenuOpen(false); setInfoOpen(false) }}><X /></Button>
+            </header>
+
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="flex flex-col items-center border-b px-5 py-6 text-center">
+                {isGroup ? (
+                  <span className="mb-3 flex size-24 items-center justify-center rounded-full bg-muted text-primary"><Users className="size-10" /></span>
+                ) : (
+                  <button type="button" aria-label={t.chat.photoMessage} className="mb-3 rounded-full" onClick={() => image && setImageModal(image)}>
+                    <UserAvatar name={name} image={image} className="size-24 text-2xl" />
+                  </button>
+                )}
+                <h3 className="max-w-full truncate text-lg font-semibold">{name}</h3>
+                {!isGroup && username && <p className="mt-1 text-sm text-muted-foreground" dir="ltr">@{username}</p>}
+                {!isGroup && data?.other?.about && <p className="mt-2 max-w-sm text-sm text-muted-foreground">{data.other.about}</p>}
+                {editingContactName && !isGroup && (
+                  <form className="mt-4 flex w-full max-w-sm gap-2" onSubmit={(event) => { event.preventDefault(); saveContactName() }}>
+                    <Input autoFocus maxLength={50} value={contactNameDraft} onChange={(event) => setContactNameDraft(event.target.value)} placeholder={t.chat.localNamePlaceholder} aria-label={t.chat.localNamePlaceholder} />
+                    <Button type="submit" disabled={!otherUserId}>{t.chat.saveLocalName}</Button>
+                  </form>
+                )}
+                {!isGroup && username && !isBlocked && (
+                  <div className="mt-4 grid w-full max-w-sm gap-2">
+                    <form className="grid gap-2 rounded-xl border p-3 text-start" onSubmit={(event) => void createGroupWithContact(event)}>
+                      <label htmlFor="contact-group-name" className="text-sm font-medium">{t.chat.createGroupWithContact}</label>
+                      <Input id="contact-group-name" maxLength={50} required value={newGroupName} onChange={(event) => setNewGroupName(event.target.value)} placeholder={t.chat.groupNameForContact} />
+                      <Button type="submit" disabled={creatingContactGroup || !newGroupName.trim()}><UserRoundPlus className="me-2 size-4" />{creatingContactGroup ? t.chat.creatingGroupWithContact : t.chat.createGroupWithContact}</Button>
+                    </form>
+                    {availableConversations.some((conversation) => conversation.isGroup) && (
+                      <form className="grid gap-2 rounded-xl border p-3 text-start" onSubmit={(event) => void addContactToExistingGroup(event)}>
+                        <label htmlFor="existing-group" className="text-sm font-medium">{t.chat.addToExistingGroup}</label>
+                        <select id="existing-group" required value={existingGroupId} onChange={(event) => setExistingGroupId(Number(event.target.value) || '')} className="h-10 rounded-xl border bg-muted px-3 text-sm">
+                          <option value="">{t.chat.selectGroup}</option>
+                          {availableConversations.filter((conversation) => conversation.isGroup).map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.groupName ?? conversation.otherName}</option>)}
+                        </select>
+                        <Button type="submit" disabled={!existingGroupId}><UserRoundPlus className="me-2 size-4" />{t.chat.addMembers}</Button>
+                      </form>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {isGroup && (
+                <section className="border-b px-4 py-4">
+                  <h3 className="mb-3 text-sm font-semibold">{t.chat.groupMembers} · {t.chat.memberCount(data?.other?.participantCount ?? 0)}</h3>
+                  <ul className="grid gap-1">
+                    {groupMembers.map((member) => (
+                      <li key={member.id}>
+                        <button type="button" className="flex w-full items-center gap-3 rounded-xl p-2 text-start hover:bg-muted" onClick={async () => {
+                          if (!member.username) return
+                          try {
+                            const result = await chatRequest<{ id: number }>('/api/conversations', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ username: member.username }),
+                            })
+                            setInfoOpen(false)
+                            onOpenConversation(result.id)
+                          } catch {
+                            setSendError(t.errors.GENERIC)
+                          }
+                        }}>
+                          <UserAvatar name={member.name} image={member.image} className="size-10" />
+                          <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{member.name}</span><span className="block truncate text-xs text-muted-foreground" dir="ltr">@{member.username}</span></span>
+                          {member.role === 'admin' && <span className="rounded-full bg-primary/10 px-2 py-1 text-[10px] text-primary">{t.chat.adminRole}</span>}
+                          <span className="text-xs text-primary">{t.chat.openContactChat}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  {((data?.conversation?.groupSettings?.addMembers ?? 'admins') === 'all' || isGroupAdmin) && (
+                    <form className="mt-3 grid gap-2 border-t pt-3" onSubmit={(event) => void addGroupMembers(event)}>
+                      <label htmlFor="group-member-usernames" className="text-sm font-medium">{t.chat.addMembers}</label>
+                      <Input id="group-member-usernames" value={groupMemberDraft} onChange={(event) => setGroupMemberDraft(event.target.value)} placeholder={t.chat.addMembersPrompt} />
+                      <Button type="submit" disabled={!groupMemberDraft.trim()}><UserRoundPlus className="me-2 size-4" />{t.chat.addMembers}</Button>
+                    </form>
+                  )}
+                  {((data?.conversation?.groupSettings?.shareInvite ?? 'admins') === 'all' || isGroupAdmin) && (
+                    <Button type="button" variant="outline" className="mt-2 w-full" disabled={groupInviteBusy} onClick={() => void shareGroupInvite()}>
+                      <Share2 className="me-2 size-4" />{groupInviteBusy ? t.chat.creatingGroupInvite : t.chat.shareGroupInvite}
+                    </Button>
+                  )}
+                  {(isGroupAdmin || data?.conversation?.groupSettings?.editGroup === 'all') && (
+                    <form className="mt-4 grid gap-3 border-t pt-4" onSubmit={(event) => void saveGroupSettings(event)}>
+                      <h4 className="text-sm font-semibold">{t.chat.groupSettings}</h4>
+                      <label className="grid gap-1 text-xs text-muted-foreground">
+                        {t.chat.renameGroup}
+                        <Input maxLength={50} value={groupNameDraft} onChange={(event) => setGroupNameDraft(event.target.value)} />
+                      </label>
+                      {isGroupAdmin && <>
+                        <label className="grid gap-1 text-xs text-muted-foreground">
+                          {t.chat.addMembersPermission}
+                          <select value={groupSettingsDraft.addMembers} onChange={(event) => setGroupSettingsDraft((settings) => ({ ...settings, addMembers: event.target.value as GroupSettings['addMembers'] }))} className="h-10 rounded-xl border bg-muted px-3 text-sm text-foreground"><option value="all">{t.chat.everyone}</option><option value="admins">{t.chat.adminsOnly}</option></select>
+                        </label>
+                        <label className="grid gap-1 text-xs text-muted-foreground">
+                          {t.chat.shareInvitePermission}
+                          <select value={groupSettingsDraft.shareInvite} onChange={(event) => setGroupSettingsDraft((settings) => ({ ...settings, shareInvite: event.target.value as GroupSettings['shareInvite'] }))} className="h-10 rounded-xl border bg-muted px-3 text-sm text-foreground"><option value="all">{t.chat.everyone}</option><option value="admins">{t.chat.adminsOnly}</option></select>
+                        </label>
+                        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={groupSettingsDraft.requireApproval} onChange={(event) => setGroupSettingsDraft((settings) => ({ ...settings, requireApproval: event.target.checked }))} />{t.chat.requireApproval}</label>
+                        <label className="grid gap-1 text-xs text-muted-foreground">
+                          {t.chat.sendMessagesPermission}
+                          <select value={groupSettingsDraft.sendMessages} onChange={(event) => setGroupSettingsDraft((settings) => ({ ...settings, sendMessages: event.target.value as GroupSettings['sendMessages'] }))} className="h-10 rounded-xl border bg-muted px-3 text-sm text-foreground"><option value="all">{t.chat.everyone}</option><option value="admins">{t.chat.adminsOnly}</option></select>
+                        </label>
+                        <label className="grid gap-1 text-xs text-muted-foreground">
+                          {t.chat.editGroupPermission}
+                          <select value={groupSettingsDraft.editGroup} onChange={(event) => setGroupSettingsDraft((settings) => ({ ...settings, editGroup: event.target.value as GroupSettings['editGroup'] }))} className="h-10 rounded-xl border bg-muted px-3 text-sm text-foreground"><option value="all">{t.chat.everyone}</option><option value="admins">{t.chat.adminsOnly}</option></select>
+                        </label>
+                      </>}
+                      <Button type="submit" disabled={savingGroupSettings}>{savingGroupSettings ? t.chat.savingGroupSettings : t.chat.saveGroupSettings}</Button>
+                    </form>
+                  )}
+                  {isGroupAdmin && groupRequests.length > 0 && (
+                    <div className="mt-4 border-t pt-4">
+                      <h4 className="mb-2 text-sm font-semibold">{t.chat.pendingGroupRequests}</h4>
+                      <ul className="grid gap-2">
+                        {groupRequests.map((request) => <li key={request.id} className="flex items-center gap-2 rounded-xl border p-2">
+                          <span className="min-w-0 flex-1 truncate text-sm">{request.profile?.name ?? request.profile?.username ?? t.chat.conversationFallback}</span>
+                          <Button type="button" size="sm" onClick={() => void reviewGroupRequest(request.id, 'approve')}>{t.chat.approve}</Button>
+                          <Button type="button" size="sm" variant="outline" onClick={() => void reviewGroupRequest(request.id, 'reject')}>{t.chat.reject}</Button>
+                        </li>)}
+                      </ul>
+                    </div>
+                  )}
+                </section>
+              )}
+
+              <section className="px-4 py-4">
+                <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold"><Link2 className="size-4 text-primary" />{t.chat.sharedMediaLinksDocs}</h3>
+                <div className="mb-3 flex gap-2 overflow-x-auto pb-1">
+                  {sharedMedia.map((message) => {
+                    const url = message.mediaPath ? mediaUrls[message.mediaPath]?.url : undefined
+                    const isVideo = message.mediaType?.startsWith('video/') || message.messageType === 'video'
+                    const isAudio = message.mediaType?.startsWith('audio/') || message.messageType === 'voice'
+                    return (
+                      <button key={message.id} type="button" disabled={!url} className="relative flex size-20 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-muted disabled:opacity-50" onClick={() => url && setMediaViewer({ url, type: isAudio ? 'audio' : isVideo ? 'video' : 'image' })} aria-label={isAudio ? t.chat.recordVoice : isVideo ? t.chat.videoMessage : t.chat.photoMessage}>
+                        {url && !isVideo && !isAudio ? <img src={url} alt="" className="size-full object-cover" loading="lazy" /> : isAudio ? <FileAudio className="size-6" /> : isVideo ? <Video className="size-6" /> : <ImageIcon className="size-6" />}
+                      </button>
+                    )
+                  })}
+                </div>
+                {sharedLinks.length > 0 && (
+                  <div className="mb-3 rounded-xl border p-3">
+                    <h4 className="mb-2 text-xs font-medium text-muted-foreground">{t.chat.sharedLinks}</h4>
+                    <ul className="grid gap-1">
+                      {sharedLinks.map((item, index) => <li key={`${item.messageId}-${index}`}><a href={item.url} target="_blank" rel="noreferrer" className="block truncate text-sm text-primary underline">{item.url}</a></li>)}
+                    </ul>
+                  </div>
+                )}
+                {sharedDocuments.length > 0 && (
+                  <div className="rounded-xl border p-3">
+                    <h4 className="mb-2 text-xs font-medium text-muted-foreground">{t.chat.sharedDocuments}</h4>
+                    <ul className="grid gap-1">
+                      {sharedDocuments.map((message) => {
+                        const url = message.mediaPath ? mediaUrls[message.mediaPath]?.url : undefined
+                        return <li key={message.id}><a href={url} download={message.mediaName ?? undefined} className="flex items-center gap-2 rounded-lg px-2 py-2 text-sm hover:bg-muted"><FileText className="size-4 shrink-0 text-primary" /><span className="truncate">{message.mediaName ?? t.chat.document}</span></a></li>
+                      })}
+                    </ul>
+                  </div>
+                )}
+                {sharedMedia.length === 0 && sharedLinks.length === 0 && sharedDocuments.length === 0 && <p className="text-xs text-muted-foreground">{t.chat.noSharedItems}</p>}
+              </section>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {mediaViewer && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 p-3" role="dialog" aria-modal="true" aria-label={mediaViewer.type === 'video' ? t.chat.videoMessage : t.chat.photoMessage} onClick={() => setMediaViewer(null)}>
+          <Button type="button" variant="ghost" size="icon" className="absolute end-3 top-3 text-white hover:bg-white/15" aria-label={t.chat.back} onClick={() => setMediaViewer(null)}><X /></Button>
+          {mediaViewer.type === 'video' ? <video src={mediaViewer.url} controls autoPlay playsInline className="max-h-[94dvh] max-w-[96vw]" onClick={(event) => event.stopPropagation()} /> : mediaViewer.type === 'audio' ? <audio src={mediaViewer.url} controls autoPlay className="max-w-[96vw]" onClick={(event) => event.stopPropagation()} /> : <img src={mediaViewer.url} alt={t.chat.photoMessage} className="max-h-[94dvh] max-w-[96vw] object-contain" onClick={(event) => event.stopPropagation()} />}
+        </div>
       )}
 
       {imageModal && (

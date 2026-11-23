@@ -33,12 +33,16 @@ export function getNativeApp(): FreeAppBridge | null {
 
 export async function pickNativeFileAsFile(
   accept: string[],
+  maxSize = Number.POSITIVE_INFINITY,
 ): Promise<File | null> {
   const nativeApp = getNativeApp()
   if (!nativeApp?.pickFile) return null
 
   const picked = await nativeApp.pickFile({ accept, multiple: false })
   if (!picked?.dataUrl) return null
+  if (Number.isFinite(picked.size) && picked.size > maxSize) {
+    throw new Error('PICKED_FILE_TOO_LARGE')
+  }
 
   const response = await fetch(picked.dataUrl)
   if (!response.ok) throw new Error('FILE_PICK_FAILED')

@@ -92,6 +92,9 @@ async function rpc(name: string, args: Record<string, unknown>) {
       "STATUS_TOO_LONG",
       "ADMIN_REQUIRED",
       "INVALID_USERNAME",
+      "GROUP_ADMIN_ONLY",
+      "GROUP_PERMISSION_DENIED",
+      "INVALID_GROUP_INVITE",
       "NAME_REQUIRED",
       "NAME_TOO_LONG",
       "ABOUT_TOO_LONG",
@@ -100,9 +103,9 @@ async function rpc(name: string, args: Record<string, unknown>) {
     if (known) {
       throw new ChatError(
         known,
-        known === "NOT_FOUND" || known === "USER_NOT_FOUND"
+        known === "NOT_FOUND" || known === "USER_NOT_FOUND" || known === "INVALID_GROUP_INVITE"
           ? 404
-          : known === "ADMIN_REQUIRED"
+          : known === "ADMIN_REQUIRED" || known === "GROUP_PERMISSION_DENIED" || known === "GROUP_ADMIN_ONLY"
             ? 403
             : 400,
       );
@@ -256,6 +259,83 @@ async function serviceRequest(path: string, init: RequestInit = {}) {
     headers.set("Content-Type", "application/json");
   }
   return fetch(`${SUPABASE_URL}${path}`, { ...init, headers });
+}
+
+async function groupContext(conversationId: number, userId: string) {
+  const [conversationResponse, memberResponse] = await Promise.all([
+    serviceRequest(`/rest/v1/conversations?select=id,kind,name,createdBy,groupSettings&id=eq.${conversationId}&limit=1`),
+    serviceRequest(`/rest/v1/conversation_members?select=userId,role&conversationId=eq.${conversationId}&userId=eq.${encodeURIComponent(userId)}&limit=1`),
+  ]);
+  if (!conversationResponse.ok || !memberResponse.ok) throw new ChatError("GENERIC", 500);
+  const conversations = await conversationResponse.json();
+  const members = await memberResponse.json();
+  const conversation = conversations?.[0];
+  const member = members?.[0];
+  if (conversation?.kind !== "group" || !member) throw new ChatError("NOT_FOUND", 404);
+  const raw = conversation.groupSettings && typeof conversation.groupSettings === "object"
+    ? conversation.groupSettings
+    : {};
+  const settings = {
+    addMembers: raw.addMembers === "all" ? "all" : "admins",
+    shareInvite: raw.shareInvite === "all" ? "all" : "admins",
+    requireApproval: raw.requireApproval === true,
+    sendMessages: raw.sendMessages === "admins" ? "admins" : "all",
+    editGroup: raw.editGroup === "all" ? "all" : "admins",
+  };
+  const isAdmin = conversation.createdBy === userId || member.role === "admin";
+  return { conversation, member, settings, isAdmin };
+}
+
+async function groupContextForInvite(conversationId: number) {
+  const response = await serviceRequest(
+    `/rest/v1/conversations?select=id,kind,groupSettings&id=eq.${conversationId}&limit=1`,
+  );
+  if (!response.ok) throw new ChatError("GENERIC", 500);
+  const conversations = await response.json();
+  const conversation = conversations?.[0];
+  if (conversation?.kind !== "group") throw new ChatError("INVALID_GROUP_INVITE", 404);
+  const raw = conversation.groupSettings && typeof conversation.groupSettings === "object"
+    ? conversation.groupSettings
+    : {};
+  return {
+    settings: {
+      requireApproval: raw.requireApproval === true,
+    },
+  };
+}
+
+async function requireGroupAdmin(conversationId: number, userId: string) {
+  const group = await groupContext(conversationId, userId);
+  if (!group.isAdmin) throw new ChatError("GROUP_PERMISSION_DENIED", 403);
+  return group;
+}
+
+async function insertGroupMembers(conversationId: number, userIds: string[]) {
+  if (!userIds.length) return;
+  const response = await serviceRequest("/rest/v1/conversation_members?on_conflict=conversationId,userId", {
+    method: "POST",
+    headers: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+    body: JSON.stringify(userIds.map((userId) => ({ conversationId, userId, role: "member" }))),
+  });
+  if (!response.ok) throw new ChatError("GENERIC", 500);
+}
+
+async function upsertGroupRequests(conversationId: number, userIds: string[], requestedBy: string) {
+  if (!userIds.length) return;
+  const response = await serviceRequest("/rest/v1/group_member_requests?on_conflict=conversation_id,user_id", {
+    method: "POST",
+    headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify(userIds.map((userId) => ({
+      conversation_id: conversationId,
+      user_id: userId,
+      requested_by: requestedBy,
+      status: "pending",
+      reviewed_by: null,
+      reviewed_at: null,
+      created_at: new Date().toISOString(),
+    }))),
+  });
+  if (!response.ok) throw new ChatError("GENERIC", 500);
 }
 
 async function requireAdmin(userId: string) {
@@ -713,6 +793,23 @@ async function handle(request: Request) {
           rpc("chat_get_block_state", { p_conversation_id: conversationId, p_user_id: user.id }),
         ]);
         if (!detail) throw new ChatError("NOT_FOUND", 404);
+        if (detail.conversation?.isGroup) {
+          const group = await groupContext(conversationId, user.id);
+          const membersResponse = await serviceRequest(
+            `/rest/v1/conversation_members?select=userId,role&conversationId=eq.${conversationId}`,
+          );
+          if (!membersResponse.ok) throw new ChatError("GENERIC", 500);
+          const groupMembers = await membersResponse.json();
+          const roles = new Map(groupMembers.map((member: { userId: string; role: string }) => [member.userId, member.role] as const));
+          detail.conversation.isGroupAdmin = group.isAdmin;
+          detail.conversation.groupSettings = group.settings;
+          if (Array.isArray(detail.other?.members)) {
+            detail.other.members = detail.other.members.map((member: { id: string }) => ({
+              ...member,
+              role: roles.get(member.id) ?? "member",
+            }));
+          }
+        }
         if (detail.other && blockState) {
           detail.other.isBlockedByMe = blockState.isBlockedByMe === true;
           detail.other.isBlockedByOther = blockState.isBlockedByOther === true;
@@ -816,7 +913,167 @@ async function handle(request: Request) {
           p_name: name,
           p_usernames: usernames,
         });
+        const roleUpdate = await serviceRequest(
+          `/rest/v1/conversation_members?conversationId=eq.${id}&userId=eq.${encodeURIComponent(user.id)}`,
+          {
+            method: "PATCH",
+            headers: { Prefer: "return=minimal" },
+            body: JSON.stringify({ role: "admin" }),
+          },
+        );
+        if (!roleUpdate.ok) throw new ChatError("GENERIC", 500);
         return json({ id });
+      }
+      case "set-group-settings": {
+        const conversationId = validConversationId(body.conversationId);
+        const group = await groupContext(conversationId, user.id);
+        const canEditName = group.isAdmin || group.settings.editGroup === "all";
+        if (!canEditName) {
+          throw new ChatError("GROUP_PERMISSION_DENIED", 403);
+        }
+        const input = body.settings && typeof body.settings === "object" && !Array.isArray(body.settings)
+          ? body.settings as Record<string, unknown>
+          : {};
+        const settings = {
+          addMembers: input.addMembers === "all" ? "all" : "admins",
+          shareInvite: input.shareInvite === "all" ? "all" : "admins",
+          requireApproval: input.requireApproval === true,
+          sendMessages: input.sendMessages === "admins" ? "admins" : "all",
+          editGroup: input.editGroup === "all" ? "all" : "admins",
+        };
+        if (!group.isAdmin && (
+          settings.addMembers !== group.settings.addMembers ||
+          settings.shareInvite !== group.settings.shareInvite ||
+          settings.requireApproval !== group.settings.requireApproval ||
+          settings.sendMessages !== group.settings.sendMessages ||
+          settings.editGroup !== group.settings.editGroup
+        )) {
+          throw new ChatError("GROUP_PERMISSION_DENIED", 403);
+        }
+        const name = typeof body.name === "string" ? body.name.trim() : group.conversation.name;
+        if (!name || name.length > 50) throw new ChatError("INVALID_GROUP_NAME", 400);
+        const update = await serviceRequest(`/rest/v1/conversations?id=eq.${conversationId}`, {
+          method: "PATCH",
+          headers: { Prefer: "return=minimal" },
+          body: JSON.stringify({ groupSettings: settings, name }),
+        });
+        if (!update.ok) throw new ChatError("GENERIC", 500);
+        return json({ groupSettings: settings, name });
+      }
+      case "add-group-members": {
+        const conversationId = validConversationId(body.conversationId);
+        const group = await groupContext(conversationId, user.id);
+        if (!group.isAdmin && group.settings.addMembers !== "all") {
+          throw new ChatError("GROUP_PERMISSION_DENIED", 403);
+        }
+        const usernames = Array.isArray(body.usernames)
+          ? [...new Set(body.usernames
+              .filter((value): value is string => typeof value === "string")
+              .map((value) => value.trim().replace(/^@/, "").toLowerCase())
+              .filter((value) => USERNAME_PATTERN.test(value)))].slice(0, 20)
+          : [];
+        if (!usernames.length) throw new ChatError("INVALID_USERNAME", 400);
+        const profilesResponse = await serviceRequest(
+          `/rest/v1/profiles?select=id,username&username=in.(${usernames.join(",")})`,
+        );
+        if (!profilesResponse.ok) throw new ChatError("GENERIC", 500);
+        const profiles = await profilesResponse.json();
+        if (profiles.length !== usernames.length) throw new ChatError("USER_NOT_FOUND", 404);
+        const targetIds = profiles.map((profile: { id: string }) => profile.id)
+          .filter((id: string) => id !== user.id);
+        if (!targetIds.length) return json({ added: 0, pending: 0 });
+        const existingResponse = await serviceRequest(
+          `/rest/v1/conversation_members?select=userId&conversationId=eq.${conversationId}&userId=in.(${targetIds.join(",")})`,
+        );
+        if (!existingResponse.ok) throw new ChatError("GENERIC", 500);
+        const existing = new Set((await existingResponse.json()).map((member: { userId: string }) => member.userId));
+        const newIds = targetIds.filter((id: string) => !existing.has(id));
+        if (group.settings.requireApproval) await upsertGroupRequests(conversationId, newIds, user.id);
+        else await insertGroupMembers(conversationId, newIds);
+        return json({ added: group.settings.requireApproval ? 0 : newIds.length, pending: group.settings.requireApproval ? newIds.length : 0 });
+      }
+      case "list-group-requests": {
+        const conversationId = validConversationId(body.conversationId);
+        await requireGroupAdmin(conversationId, user.id);
+        const requestsResponse = await serviceRequest(
+          `/rest/v1/group_member_requests?select=id,user_id,requested_by,status,created_at&conversation_id=eq.${conversationId}&status=eq.pending&order=created_at.asc`,
+        );
+        if (!requestsResponse.ok) throw new ChatError("GENERIC", 500);
+        const requests = await requestsResponse.json();
+        const ids = [...new Set(requests.map((request: { user_id: string }) => request.user_id))];
+        const profilesResponse = ids.length
+          ? await serviceRequest(`/rest/v1/profiles?select=id,username,name,image&id=in.(${ids.join(",")})`)
+          : null;
+        if (profilesResponse && !profilesResponse.ok) throw new ChatError("GENERIC", 500);
+        const profiles = profilesResponse ? await profilesResponse.json() : [];
+        const profilesById = new Map(profiles.map((profile: { id: string }) => [profile.id, profile] as const));
+        return json({ requests: requests.map((request: { user_id: string }) => ({ ...request, profile: profilesById.get(request.user_id) ?? null })) });
+      }
+      case "review-group-request": {
+        const conversationId = validConversationId(body.conversationId);
+        await requireGroupAdmin(conversationId, user.id);
+        const requestId = typeof body.requestId === "string" && /^[0-9a-f-]{36}$/i.test(body.requestId)
+          ? body.requestId
+          : "";
+        const decision = body.decision === "approve" ? "approved" : body.decision === "reject" ? "rejected" : "";
+        if (!requestId || !decision) throw new ChatError("NOT_FOUND", 404);
+        const requestResponse = await serviceRequest(
+          `/rest/v1/group_member_requests?select=id,user_id&conversation_id=eq.${conversationId}&id=eq.${requestId}&status=eq.pending&limit=1`,
+        );
+        if (!requestResponse.ok) throw new ChatError("GENERIC", 500);
+        const requests = await requestResponse.json();
+        if (!requests.length) throw new ChatError("NOT_FOUND", 404);
+        if (decision === "approved") await insertGroupMembers(conversationId, [requests[0].user_id]);
+        const update = await serviceRequest(
+          `/rest/v1/group_member_requests?id=eq.${requestId}&conversation_id=eq.${conversationId}&status=eq.pending`,
+          {
+            method: "PATCH",
+            headers: { Prefer: "return=minimal" },
+            body: JSON.stringify({ status: decision, reviewed_by: user.id, reviewed_at: new Date().toISOString() }),
+          },
+        );
+        if (!update.ok) throw new ChatError("GENERIC", 500);
+        return json({ ok: true });
+      }
+      case "create-group-invite": {
+        const conversationId = validConversationId(body.conversationId);
+        const group = await groupContext(conversationId, user.id);
+        if (!group.isAdmin && group.settings.shareInvite !== "all") {
+          throw new ChatError("GROUP_PERMISSION_DENIED", 403);
+        }
+        const bytes = crypto.getRandomValues(new Uint8Array(24));
+        const token = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+        const response = await serviceRequest("/rest/v1/group_invites", {
+          method: "POST",
+          headers: { Prefer: "return=minimal" },
+          body: JSON.stringify({ token, conversation_id: conversationId, created_by: user.id, expires_at: expiresAt }),
+        });
+        if (!response.ok) throw new ChatError("GENERIC", 500);
+        return json({ token, expiresAt });
+      }
+      case "join-group-invite": {
+        const token = typeof body.token === "string" && /^[a-f0-9]{48}$/.test(body.token) ? body.token : "";
+        if (!token) throw new ChatError("INVALID_GROUP_INVITE", 404);
+        const inviteResponse = await serviceRequest(
+          `/rest/v1/group_invites?select=conversation_id&token=eq.${token}&expires_at=gt.${encodeURIComponent(new Date().toISOString())}&limit=1`,
+        );
+        if (!inviteResponse.ok) throw new ChatError("GENERIC", 500);
+        const invites = await inviteResponse.json();
+        if (!invites.length) throw new ChatError("INVALID_GROUP_INVITE", 404);
+        const conversationId = Number(invites[0].conversation_id);
+        const group = await groupContextForInvite(conversationId);
+        const existingResponse = await serviceRequest(
+          `/rest/v1/conversation_members?select=userId&conversationId=eq.${conversationId}&userId=eq.${encodeURIComponent(user.id)}&limit=1`,
+        );
+        if (!existingResponse.ok) throw new ChatError("GENERIC", 500);
+        if ((await existingResponse.json()).length) return json({ id: conversationId, status: "member" });
+        if (group.settings.requireApproval) {
+          await upsertGroupRequests(conversationId, [user.id], user.id);
+          return json({ id: conversationId, status: "pending" });
+        }
+        await insertGroupMembers(conversationId, [user.id]);
+        return json({ id: conversationId, status: "member" });
       }
       case "search-messages": {
         const conversationId = validConversationId(body.conversationId);

@@ -51,6 +51,14 @@ export type ChatMessage = {
   pinned?: boolean
 }
 
+export type GroupSettings = {
+  addMembers: 'all' | 'admins'
+  shareInvite: 'all' | 'admins'
+  requireApproval: boolean
+  sendMessages: 'all' | 'admins'
+  editGroup: 'all' | 'admins'
+}
+
 export type ConversationDetail = {
   other: {
     username: string | null
@@ -59,7 +67,7 @@ export type ConversationDetail = {
     about?: string
     isGroup?: boolean
     participantCount?: number
-    members?: Array<{ id: string; name: string; username: string; image: string | null }>
+    members?: Array<{ id: string; name: string; username: string; image: string | null; role?: 'admin' | 'member' }>
     isBlockedByMe?: boolean
     isBlockedByOther?: boolean
     isBlocked?: boolean
@@ -70,6 +78,8 @@ export type ConversationDetail = {
     name: string | null
     participantCount: number
     isMuted: boolean
+    isGroupAdmin?: boolean
+    groupSettings?: GroupSettings
     messageRequestStatus?: 'pending' | 'accepted' | 'declined' | null
   }
   otherLastReadAt: string | null

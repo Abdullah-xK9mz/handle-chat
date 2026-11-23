@@ -21,6 +21,7 @@ export type SidebarSection = 'chats' | 'groups' | 'statuses'
 type SidebarProps = {
   currentUser: CurrentUser
   conversations: ConversationSummary[]
+  contactNames: Record<string, string>
   isLoading: boolean
   error: unknown
   activeId: number | null
@@ -34,6 +35,7 @@ type SidebarProps = {
 export function Sidebar({
   currentUser,
   conversations,
+  contactNames,
   isLoading,
   error,
   activeId,
@@ -139,6 +141,9 @@ export function Sidebar({
           <ul className="flex flex-col gap-0.5 p-2">
             {visibleConversations.map((c) => {
               const isActive = c.id === activeId
+              const displayName = !c.isGroup && !c.otherBlockedMe
+                ? contactNames[c.otherUserId] || c.otherName
+                : c.otherName
               const messagePreview = c.lastBody
                 ? c.lastBody
                 : c.lastMessageType === 'voice'
@@ -204,7 +209,7 @@ export function Sidebar({
                       <span className="flex items-baseline justify-between gap-2">
                         <span className="truncate text-sm font-semibold">
                           {c.isGroup && <Users className="me-1 inline size-3.5" aria-hidden="true" />}
-                          {c.otherName}
+                          {displayName}
                         </span>
                         <span
                           className={cn(

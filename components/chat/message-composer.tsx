@@ -3,12 +3,14 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   CalendarPlus,
+  FileAudio,
   FileText,
   ImagePlus,
   ListPlus,
   MapPin,
   Mic,
   Plus,
+  Video,
   SendHorizontal,
   StopCircle,
   UserRound,
@@ -58,6 +60,7 @@ export function MessageComposer({
   const [menuOpen, setMenuOpen] = useState(false)
   const [dialogType, setDialogType] = useState<StructuredType | null>(null)
   const [recording, setRecording] = useState(false)
+  const [sharingLocation, setSharingLocation] = useState(false)
   const [contactName, setContactName] = useState('')
   const [contactPhone, setContactPhone] = useState('')
   const [contactEmail, setContactEmail] = useState('')
@@ -131,6 +134,18 @@ export function MessageComposer({
     setMenuOpen(false)
   }
 
+  function pickAttachment(kind: 'media' | 'document') {
+    setMenuOpen(false)
+    setLocalError(null)
+    if (kind === 'document') {
+      documentRef.current?.click()
+      return
+    }
+    // Let Android/iOS open their native photo and video gallery through the
+    // browser file input. The APK bridge returns base64 data and stalls on large media.
+    mediaRef.current?.click()
+  }
+
   async function toggleRecording() {
     if (recording) {
       recorderRef.current?.stop()
@@ -173,16 +188,26 @@ export function MessageComposer({
       return
     }
     setMenuOpen(false)
+    setSharingLocation(true)
     navigator.geolocation.getCurrentPosition(
       async ({ coords }) => {
-        const sent = await onSendStructured('location', {
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-        })
-        if (sent) setLocalError(null)
+        try {
+          const sent = await onSendStructured('location', {
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+          })
+          if (sent) setLocalError(null)
+        } catch {
+          setLocalError(t.errors.GENERIC)
+        } finally {
+          setSharingLocation(false)
+        }
       },
-      () => setLocalError(t.errors.LOCATION_PERMISSION),
-      { enableHighAccuracy: true, timeout: 15_000 },
+      () => {
+        setLocalError(t.errors.LOCATION_PERMISSION)
+        setSharingLocation(false)
+      },
+      { enableHighAccuracy: false, timeout: 8_000, maximumAge: 60_000 },
     )
   }
 
@@ -232,22 +257,22 @@ export function MessageComposer({
       {replyMessage && <div className="mx-auto mb-2 flex max-w-3xl items-center gap-2 rounded-xl border-s-2 border-primary bg-muted/60 px-3 py-2 text-xs"><Reply className="size-4 shrink-0 text-primary" /><div className="min-w-0 flex-1"><p className="font-medium text-primary">{t.chat.replyTo(replyMessage.replySenderName || t.chat.reply)}</p><p className="truncate text-muted-foreground">{replyMessage.deletedAt ? t.chat.replyDeleted : replyMessage.body || replyMessage.mediaName || t.chat.document}</p></div><button type="button" onClick={onCancelReply} className="rounded-full p-1 text-muted-foreground hover:bg-background" aria-label={t.chat.cancel}><X className="size-4" /></button></div>}
       {file && (
         <div className="mx-auto mb-2 flex max-w-3xl items-center gap-2 rounded-xl border bg-muted/60 px-3 py-2 text-sm">
-          {file.type.startsWith('video/') ? <FileText className="size-4 shrink-0 text-muted-foreground" /> : <ImagePlus className="size-4 shrink-0 text-muted-foreground" />}
+          {file.type.startsWith('audio/') ? <FileAudio className="size-4 shrink-0 text-muted-foreground" /> : file.type.startsWith('video/') ? <Video className="size-4 shrink-0 text-muted-foreground" /> : file.type.startsWith('image/') ? <ImagePlus className="size-4 shrink-0 text-muted-foreground" /> : <FileText className="size-4 shrink-0 text-muted-foreground" />}
           <span className="min-w-0 flex-1 truncate">{file.name}</span>
           <span className="shrink-0 text-xs text-muted-foreground">{(file.size / (1024 * 1024)).toFixed(1)} MB</span>
           <button type="button" className="rounded-full p-1 text-muted-foreground hover:bg-background" aria-label={t.chat.removeAttachment} onClick={() => setFile(null)}><X className="size-4" /></button>
         </div>
       )}
       <form className="mx-auto flex max-w-3xl items-end gap-2" onSubmit={(event) => { event.preventDefault(); void submit() }}>
-        <input ref={mediaRef} type="file" accept="image/*,video/*,audio/*" className="sr-only" tabIndex={-1} onChange={(event) => { handleFile(event.target.files?.[0] ?? null); event.target.value = '' }} />
+        <input ref={mediaRef} type="file" accept="image/*,video/*" className="sr-only" tabIndex={-1} onChange={(event) => { handleFile(event.target.files?.[0] ?? null); event.target.value = '' }} />
         <input ref={documentRef} type="file" accept=".pdf,.txt,.csv,.doc,.docx,.xls,.xlsx,.ppt,.pptx,application/pdf,text/plain,text/csv,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation" className="sr-only" tabIndex={-1} onChange={(event) => { handleFile(event.target.files?.[0] ?? null); event.target.value = '' }} />
         <div className="relative shrink-0">
-          <Button type="button" variant="outline" size="icon-lg" disabled={pending || recording} className="size-10 rounded-full" aria-label={t.chat.attachmentMenu} title={t.chat.attachmentMenu} data-attachment-menu-trigger onClick={() => setMenuOpen((open) => !open)}><Plus /></Button>
+          <Button type="button" variant="outline" size="icon-lg" disabled={pending || recording || sharingLocation} className="size-10 rounded-full" aria-label={t.chat.attachmentMenu} title={t.chat.attachmentMenu} data-attachment-menu-trigger onClick={() => setMenuOpen((open) => !open)}><Plus /></Button>
           {menuOpen && (
             <div data-attachment-menu className="absolute bottom-full start-0 z-20 mb-2 grid min-w-52 gap-1 rounded-xl border bg-popover p-2 shadow-xl">
-              <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setMenuOpen(false); mediaRef.current?.click() }}><ImagePlus className="size-4" />{t.chat.attachMedia}</button>
-              <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setMenuOpen(false); documentRef.current?.click() }}><FileText className="size-4" />{t.chat.document}</button>
-              <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => void shareLocation()}><MapPin className="size-4" />{t.chat.location}</button>
+              <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => pickAttachment('media')}><ImagePlus className="size-4" />{t.chat.attachMedia}</button>
+              <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => pickAttachment('document')}><FileText className="size-4" />{t.chat.document}</button>
+              <button type="button" disabled={sharingLocation} className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted disabled:opacity-60" onClick={() => void shareLocation()}><MapPin className="size-4" />{sharingLocation ? t.chat.gettingLocation : t.chat.location}</button>
               <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setDialogType('contact'); setMenuOpen(false) }}><UserRound className="size-4" />{t.chat.contact}</button>
               <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setDialogType('poll'); setMenuOpen(false) }}><ListPlus className="size-4" />{t.chat.poll}</button>
               <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setDialogType('event'); setMenuOpen(false) }}><CalendarPlus className="size-4" />{t.chat.event}</button>
