@@ -1,6 +1,7 @@
 'use client'
 
-import { Fragment, useEffect, useRef, useState, type FormEvent } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import useSWR from 'swr'
 import {
   ArrowLeft,
@@ -58,6 +59,52 @@ const DEFAULT_GROUP_SETTINGS: GroupSettings = {
   requireApproval: false,
   sendMessages: 'all',
   editGroup: 'admins',
+}
+
+function renderMessageText(text: string): ReactNode[] {
+  const parts: ReactNode[] = []
+  const pattern = /(?:https?:\/\/|www\.)[^\s<>"']+/gi
+  let cursor = 0
+
+  for (const match of text.matchAll(pattern)) {
+    const start = match.index ?? 0
+    const raw = match[0]
+    const trailing = raw.match(/[.,!?;:)\]}]+$/)?.[0] ?? ''
+    const visibleUrl = raw.slice(0, raw.length - trailing.length)
+    if (!visibleUrl) continue
+
+    if (start > cursor) parts.push(text.slice(cursor, start))
+    const candidate = visibleUrl.startsWith('www.') ? `https://${visibleUrl}` : visibleUrl
+    let href: string | null = null
+    try {
+      const parsed = new URL(candidate)
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') href = parsed.href
+    } catch {
+      href = null
+    }
+
+    if (href) {
+      parts.push(
+        <a
+          key={`message-link-${start}`}
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="break-all text-primary underline underline-offset-2 hover:opacity-80"
+          dir="ltr"
+        >
+          {visibleUrl}
+        </a>,
+      )
+      cursor = start + visibleUrl.length
+    } else {
+      parts.push(raw)
+      cursor = start + raw.length
+    }
+  }
+
+  if (cursor < text.length) parts.push(text.slice(cursor))
+  return parts
 }
 
 type ConversationViewProps = {
@@ -125,9 +172,11 @@ export function ConversationView({
   const [actionNotice, setActionNotice] = useState<string | null>(null)
   const [reportMenuOpen, setReportMenuOpen] = useState(false)
   const [openMessageActions, setOpenMessageActions] = useState<number | null>(null)
-  const [messageMenuAbove, setMessageMenuAbove] = useState(false)
+  const [messageActionAnchor, setMessageActionAnchor] = useState<{ top: number; bottom: number; left: number; right: number } | null>(null)
+  const [messageActionPosition, setMessageActionPosition] = useState<{ top: number; left: number } | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
+  const messageActionMenuRef = useRef<HTMLDivElement>(null)
   const loadingMediaRef = useRef(new Set<string>())
   const holdTimer = useRef<number | null>(null)
 
@@ -203,10 +252,41 @@ export function ConversationView({
   }
 
   function showMessageActions(id: number) {
-    const rect = document.getElementById(`message-${id}`)?.getBoundingClientRect()
-    setMessageMenuAbove(Boolean(rect && rect.bottom > window.innerHeight - 280))
+    const messageElement = document.getElementById(`message-${id}`)
+    const bubbleElement = messageElement?.querySelector<HTMLElement>('[data-message-bubble]')
+    if (!bubbleElement) return
+    const rect = bubbleElement.getBoundingClientRect()
+    setMessageActionAnchor({ top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right })
+    setMessageActionPosition({
+      top: Math.max(12, Math.min(rect.bottom + 8, window.innerHeight - 240)),
+      left: Math.max(12, Math.min(document.documentElement.dir === 'rtl' ? rect.right - 208 : rect.left, window.innerWidth - 220)),
+    })
     setOpenMessageActions(id)
   }
+
+  useLayoutEffect(() => {
+    if (openMessageActions === null || !messageActionAnchor || !messageActionMenuRef.current) return
+    const menu = messageActionMenuRef.current.getBoundingClientRect()
+    const padding = 12
+    const gap = 8
+    let left = document.documentElement.dir === 'rtl'
+      ? messageActionAnchor.right - menu.width
+      : messageActionAnchor.left
+    left = Math.max(padding, Math.min(left, window.innerWidth - menu.width - padding))
+
+    let top = messageActionAnchor.bottom + gap
+    if (top + menu.height > window.innerHeight - padding && messageActionAnchor.top - menu.height - gap >= padding) {
+      top = messageActionAnchor.top - menu.height - gap
+    } else {
+      top = Math.max(padding, Math.min(top, window.innerHeight - menu.height - padding))
+    }
+
+    setMessageActionPosition((current) =>
+      current && Math.abs(current.top - top) < 1 && Math.abs(current.left - left) < 1
+        ? current
+        : { top, left },
+    )
+  }, [openMessageActions, messageActionAnchor])
 
   function clearMessageHold() {
     if (holdTimer.current !== null) window.clearTimeout(holdTimer.current)
@@ -328,9 +408,22 @@ export function ConversationView({
       const target = event.target
       if (target instanceof Element && target.closest('[data-message-action-menu], [data-message-action-trigger]')) return
       setOpenMessageActions(null)
+      setMessageActionAnchor(null)
+      setMessageActionPosition(null)
+    }
+    const dismissOnLayoutChange = () => {
+      setOpenMessageActions(null)
+      setMessageActionAnchor(null)
+      setMessageActionPosition(null)
     }
     document.addEventListener('pointerdown', dismiss)
-    return () => document.removeEventListener('pointerdown', dismiss)
+    window.addEventListener('resize', dismissOnLayoutChange)
+    messagesContainerRef.current?.addEventListener('scroll', dismissOnLayoutChange)
+    return () => {
+      document.removeEventListener('pointerdown', dismiss)
+      window.removeEventListener('resize', dismissOnLayoutChange)
+      messagesContainerRef.current?.removeEventListener('scroll', dismissOnLayoutChange)
+    }
   }, [openMessageActions])
 
   useEffect(() => {
@@ -862,6 +955,7 @@ export function ConversationView({
                     onTouchMove={clearMessageHold}
                   >
                     <div
+                      data-message-bubble
                       className={cn(
                         'relative max-w-[88%] rounded-2xl px-3 py-1.5 shadow-xs md:max-w-[72%]',
                         isMembersAddedEvent
@@ -889,14 +983,22 @@ export function ConversationView({
                             <MoreHorizontal className="size-4" />
                           </button>
                           {openMessageActions === message.id && (
-                            <div data-message-action-menu className={cn('fixed inset-x-3 bottom-[calc(5rem+env(safe-area-inset-bottom))] z-50 grid max-h-[min(60dvh,22rem)] gap-0.5 overflow-y-auto rounded-xl border bg-popover p-1.5 text-popover-foreground shadow-xl md:absolute md:inset-x-auto md:end-1 md:min-w-48', messageMenuAbove ? 'md:bottom-full md:mb-2' : 'md:top-8')}>
-                              <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setReply(message); setOpenMessageActions(null) }}><Reply className="size-3.5" />{t.chat.reply}</button>
-                              <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { void copyMessage(message); setOpenMessageActions(null) }}><Copy className="size-3.5" />{t.chat.copyMessage}</button>
-                              <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setForwarding(message); setOpenMessageActions(null); pushChatPage('forward-message') }}><Forward className="size-3.5" />{t.chat.forwardMessage}</button>
-                              <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { void runMessageAction('star', message); setOpenMessageActions(null) }}><Star className={cn('size-3.5', message.starredByMe && 'fill-current text-primary')} />{message.starredByMe ? t.chat.unstarMessage : t.chat.starMessage}</button>
-                              <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { void runMessageAction('pin', message); setOpenMessageActions(null) }}><Pin className="size-3.5" />{message.pinned ? t.chat.unpinMessage : t.chat.pinMessage}</button>
-                              {(mine || isAdmin) && <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs text-destructive hover:bg-destructive/10" onClick={() => { void runMessageAction('delete', message); setOpenMessageActions(null) }}><Trash2 className="size-3.5" />{t.chat.deleteMessage}</button>}
-                            </div>
+                            typeof document !== 'undefined' && messageActionPosition && createPortal(
+                              <div
+                                ref={messageActionMenuRef}
+                                data-message-action-menu
+                                style={{ top: messageActionPosition.top, left: messageActionPosition.left }}
+                                className="fixed z-[100] grid w-52 max-w-[calc(100vw-1.5rem)] max-h-[min(60dvh,22rem)] gap-0.5 overflow-y-auto rounded-xl border bg-popover p-1.5 text-popover-foreground shadow-xl"
+                              >
+                                <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setReply(message); setOpenMessageActions(null) }}><Reply className="size-3.5" />{t.chat.reply}</button>
+                                <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { void copyMessage(message); setOpenMessageActions(null) }}><Copy className="size-3.5" />{t.chat.copyMessage}</button>
+                                <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setForwarding(message); setOpenMessageActions(null); pushChatPage('forward-message') }}><Forward className="size-3.5" />{t.chat.forwardMessage}</button>
+                                <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { void runMessageAction('star', message); setOpenMessageActions(null) }}><Star className={cn('size-3.5', message.starredByMe && 'fill-current text-primary')} />{message.starredByMe ? t.chat.unstarMessage : t.chat.starMessage}</button>
+                                <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { void runMessageAction('pin', message); setOpenMessageActions(null) }}><Pin className="size-3.5" />{message.pinned ? t.chat.unpinMessage : t.chat.pinMessage}</button>
+                                {(mine || isAdmin) && <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs text-destructive hover:bg-destructive/10" onClick={() => { void runMessageAction('delete', message); setOpenMessageActions(null) }}><Trash2 className="size-3.5" />{t.chat.deleteMessage}</button>}
+                              </div>,
+                              document.body,
+                            )
                           )}
                         </>
                       )}
@@ -999,7 +1101,7 @@ export function ConversationView({
                           dir="auto"
                           className="chat-message-text select-none text-sm leading-relaxed break-words whitespace-pre-wrap"
                         >
-                          {message.body}
+                          {renderMessageText(message.body)}
                         </p>
                       ) : null)}
                       <p

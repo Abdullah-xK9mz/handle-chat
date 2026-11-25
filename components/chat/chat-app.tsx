@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils'
 import { chatRequest, createRealtimeClient, edgeRequest } from '@/lib/supabase'
 import { getNativeApp } from '@/lib/native-app'
 import { CONTACT_NAMES_CHANGED, getLocalContactNames } from '@/lib/local-contact-names'
+import { NOTIFICATION_PREVIEW_KEY, readBooleanPreference } from '@/lib/chat-preferences'
 import { ConversationView } from './conversation-view'
 import { Sidebar, type SidebarSection } from './sidebar'
 import {
@@ -175,7 +176,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
             !conversation.isMuted &&
             conversation.lastMessageAt !== before
           ) {
-            const body = conversation.lastBody || (conversation.lastMessageType === 'voice'
+            const body = readBooleanPreference(NOTIFICATION_PREVIEW_KEY, true) ? (conversation.lastBody || (conversation.lastMessageType === 'voice'
               ? t.chat.recordVoice
               : conversation.lastMessageType === 'document'
                 ? t.chat.document
@@ -187,7 +188,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
                       ? t.chat.videoMessage
                       : conversation.lastMediaType?.startsWith('image/')
                         ? t.chat.photoMessage
-                        : t.chat.contact)
+                        : t.chat.contact)) : t.chat.newMessage
             const title = conversation.isGroup
               ? conversation.groupName ?? conversation.otherName
               : conversation.otherName

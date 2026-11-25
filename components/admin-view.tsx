@@ -94,6 +94,7 @@ export function AdminView({ currentUserId }: Props) {
   const selectedUser = users.find((user) => user.id === selectedUserId) ?? null
   const selectedReport = reports.find((report) => report.id === selectedReportId) ?? null
   const selectedRequest = messageRequests.find((request) => request.conversationId === selectedRequestId) ?? null
+  const openReportCount = reports.filter((report) => report.status === 'open').length
   const filteredUsers = useMemo(() => {
     const query = userQuery.trim().replace(/^@/, '').toLocaleLowerCase()
     if (!query) return users
@@ -118,19 +119,23 @@ export function AdminView({ currentUserId }: Props) {
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([
+    Promise.allSettled([
       edgeRequest<{ users: AdminUser[] }>({ action: 'admin-list-users' }),
       edgeRequest<{ conversations: AdminConversation[] }>({ action: 'admin-list-conversations' }),
       edgeRequest<{ reports: AdminReport[] }>({ action: 'admin-list-reports' }),
       edgeRequest<{ requests: AdminMessageRequest[] }>({ action: 'admin-list-message-requests' }),
     ]).then(([userResult, conversationResult, reportResult, requestResult]) => {
       if (cancelled) return
-      setUsers(userResult.users)
-      setConversations(conversationResult.conversations)
-      setReports(reportResult.reports)
-      setMessageRequests(requestResult.requests)
-    }).catch(() => {
-      if (!cancelled) setError(t.errors.GENERIC)
+      let failed = false
+      if (userResult.status === 'fulfilled') setUsers(userResult.value.users)
+      else failed = true
+      if (conversationResult.status === 'fulfilled') setConversations(conversationResult.value.conversations)
+      else failed = true
+      if (reportResult.status === 'fulfilled') setReports(reportResult.value.reports)
+      else failed = true
+      if (requestResult.status === 'fulfilled') setMessageRequests(requestResult.value.requests)
+      else failed = true
+      if (failed) setError(t.errors.GENERIC)
     }).finally(() => {
       if (!cancelled) setLoading(false)
     })
@@ -146,6 +151,15 @@ export function AdminView({ currentUserId }: Props) {
     const timer = window.setInterval(() => { void refresh() }, 5000)
     return () => { cancelled = true; window.clearInterval(timer) }
   }, [section])
+
+  useEffect(() => {
+    let cancelled = false
+    const refresh = () => edgeRequest<{ reports: AdminReport[] }>({ action: 'admin-list-reports' })
+      .then((result) => { if (!cancelled) setReports(result.reports) })
+      .catch(() => undefined)
+    const timer = window.setInterval(() => { void refresh() }, 5000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [])
 
   useEffect(() => {
     if (!selectedUserId) { setDevices([]); return }
@@ -335,7 +349,7 @@ export function AdminView({ currentUserId }: Props) {
         <nav className="grid grid-cols-4 gap-2 border-b p-3 sm:px-6">
           {(['users', 'conversations', 'requests', 'reports'] as const).map((tab) => (
             <button key={tab} type="button" onClick={() => setSection(tab)} className={`rounded-xl px-3 py-2.5 text-sm font-medium transition-colors ${section === tab ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground hover:text-foreground'}`}>
-              {tab === 'requests' ? t.admin.messageRequests : t.admin[tab]}
+              {tab === 'requests' ? t.admin.messageRequests : tab === 'conversations' ? t.admin.reportedConversations : tab === 'reports' && openReportCount > 0 ? `${t.admin.reports} · ${openReportCount.toLocaleString(locale)}` : t.admin[tab]}
             </button>
           ))}
         </nav>
@@ -393,10 +407,10 @@ export function AdminView({ currentUserId }: Props) {
                     <h2 className="font-semibold">{t.admin.devices}</h2>
                     {devices.length === 0 ? <p className="text-sm text-muted-foreground">{t.admin.noDevices}</p> : devices.map((device) => (
                       <div key={device.device_id} className="flex flex-wrap items-center gap-2 border-t pt-3">
-                        <div className="min-w-0 flex-1" title={device.device_id}>
-                          <p className="truncate text-sm">{device.user_agent || device.device_id.slice(0, 8)}</p>
-                          <p className="text-xs text-muted-foreground">{t.admin.deviceSeen}: {new Date(device.last_seen_at).toLocaleString(locale)}</p>
-                          <p className={`text-xs ${device.blockedAt ? 'text-destructive' : 'text-muted-foreground'}`}>{device.blockedAt ? t.admin.blockedDevice : t.admin.activeDevice}</p>
+                        <div className="min-w-0 flex-1 overflow-hidden" title={device.device_id}>
+                          <p className="max-w-full break-all text-sm leading-5">{device.user_agent || device.device_id.slice(0, 8)}</p>
+                          <p className="break-words text-xs text-muted-foreground">{t.admin.deviceSeen}: {new Date(device.last_seen_at).toLocaleString(locale)}</p>
+                          <p className={`break-words text-xs ${device.blockedAt ? 'text-destructive' : 'text-muted-foreground'}`}>{device.blockedAt ? t.admin.blockedDevice : t.admin.activeDevice}</p>
                         </div>
                         <Button type="button" size="sm" variant={device.blockedAt ? 'secondary' : 'destructive'} onClick={() => void setDeviceBan(device)}>{device.blockedAt ? t.admin.unblockDevice : t.admin.blockDevice}</Button>
                       </div>
@@ -409,7 +423,7 @@ export function AdminView({ currentUserId }: Props) {
         ) : section === 'conversations' ? (
           <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(250px,0.8fr)_minmax(0,1.5fr)]">
             <aside className="max-h-64 overflow-y-auto border-b p-2 md:max-h-none md:border-b-0 md:border-e">
-              {conversations.map((conversation) => <div key={conversation.id} className={`mb-1 flex items-center gap-1 rounded-xl p-2 ${selectedConversation === conversation.id ? 'bg-accent' : 'hover:bg-muted'}`}>
+              {conversations.length === 0 ? <p className="p-4 text-center text-sm text-muted-foreground">{t.admin.noReportedConversations}</p> : conversations.map((conversation) => <div key={conversation.id} className={`mb-1 flex items-center gap-1 rounded-xl p-2 ${selectedConversation === conversation.id ? 'bg-accent' : 'hover:bg-muted'}`}>
                 <button type="button" className="min-w-0 flex-1 p-1 text-start" onClick={() => void selectConversation(conversation.id)}>
                   <span className="block truncate text-sm font-medium">{conversation.name || `${conversation.kind === 'group' ? t.chat.tabs.groups : t.admin.conversations} #${conversation.id}`}</span>
                   <span className="text-xs text-muted-foreground">{conversation.participantCount} · {conversation.messageCount} · {new Date(conversation.lastMessageAt).toLocaleDateString(locale)}</span>

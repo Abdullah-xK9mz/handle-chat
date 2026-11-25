@@ -18,6 +18,7 @@ import {
 } from '@/lib/supabase'
 import { errorMessage } from '@/lib/i18n/dictionaries'
 import { closeChatPage, pushChatPage } from '@/lib/chat-pages'
+import { NOTIFICATION_PREVIEW_KEY, readBooleanPreference, SEND_ON_ENTER_KEY, writeBooleanPreference } from '@/lib/chat-preferences'
 import { getNativeApp, pickNativeFileAsFile } from '@/lib/native-app'
 
 type KnownDevice = {
@@ -89,6 +90,8 @@ export function SettingsView({
   const [blockedLoading, setBlockedLoading] = useState(false)
   const [blockedError, setBlockedError] = useState(false)
   const [messageTextSize, setMessageTextSize] = useState<'small' | 'normal' | 'large'>('normal')
+  const [sendOnEnter, setSendOnEnter] = useState(true)
+  const [notificationPreview, setNotificationPreview] = useState(true)
   const [shareUrl, setShareUrl] = useState('')
   const [copiedLink, setCopiedLink] = useState(false)
   const [scannerOpen, setScannerOpen] = useState(false)
@@ -112,6 +115,8 @@ export function SettingsView({
       .finally(() => { if (!cancelled) setDevicesLoading(false) })
     const storedSize = localStorage.getItem('handle.chat.message-size.v1')
     if (storedSize === 'small' || storedSize === 'large') setMessageTextSize(storedSize)
+    setSendOnEnter(readBooleanPreference(SEND_ON_ENTER_KEY, true))
+    setNotificationPreview(readBooleanPreference(NOTIFICATION_PREVIEW_KEY, true))
     return () => { cancelled = true }
   }, [])
 
@@ -248,6 +253,16 @@ export function SettingsView({
     setMessageTextSize(value)
     localStorage.setItem('handle.chat.message-size.v1', value)
     document.documentElement.dataset.chatMessageSize = value
+  }
+
+  function changeSendOnEnter(value: boolean) {
+    setSendOnEnter(value)
+    writeBooleanPreference(SEND_ON_ENTER_KEY, value)
+  }
+
+  function changeNotificationPreview(value: boolean) {
+    setNotificationPreview(value)
+    writeBooleanPreference(NOTIFICATION_PREVIEW_KEY, value)
   }
 
   function selectPhoto(selected: File | null) {
@@ -609,6 +624,13 @@ export function SettingsView({
             <option value="normal">{t.settings.textSizeNormal}</option>
             <option value="large">{t.settings.textSizeLarge}</option>
           </select>
+          <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border p-3">
+            <input type="checkbox" checked={sendOnEnter} onChange={(event) => changeSendOnEnter(event.target.checked)} className="mt-1 size-4 accent-primary" />
+            <span className="min-w-0">
+              <span className="block text-sm font-medium">{t.settings.sendOnEnter}</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">{t.settings.sendOnEnterHint}</span>
+            </span>
+          </label>
         </section>
 
         <section className="mt-4 rounded-2xl border bg-card p-5 shadow-sm sm:p-6" aria-labelledby="language-title">
@@ -627,6 +649,13 @@ export function SettingsView({
           <Button type="button" variant={notificationsEnabled ? 'default' : 'outline'} onClick={() => void toggleNotifications()} className="mt-4">
             {notificationsEnabled ? t.settings.disableNotifications : t.settings.enableNotifications}
           </Button>
+          <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border p-3">
+            <input type="checkbox" checked={notificationPreview} onChange={(event) => changeNotificationPreview(event.target.checked)} className="mt-1 size-4 accent-primary" />
+            <span className="min-w-0">
+              <span className="block text-sm font-medium">{t.settings.notificationPreview}</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">{t.settings.notificationPreviewHint}</span>
+            </span>
+          </label>
         </section>
 
         <section className="mt-4 rounded-2xl border bg-card p-5 shadow-sm sm:p-6">

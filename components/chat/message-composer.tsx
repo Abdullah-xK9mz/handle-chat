@@ -21,6 +21,7 @@ import {
 import { useI18n } from '@/components/i18n-provider'
 import { Button } from '@/components/ui/button'
 import { closeChatPage, pushChatPage } from '@/lib/chat-pages'
+import { readBooleanPreference, SEND_ON_ENTER_KEY } from '@/lib/chat-preferences'
 import type { ChatMessage } from './types'
 
 const MAX_LENGTH = 4000
@@ -60,6 +61,7 @@ export function MessageComposer({
   const [file, setFile] = useState<File | null>(null)
   const [localError, setLocalError] = useState<string | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [sendOnEnter, setSendOnEnter] = useState(true)
   const [dialogType, setDialogType] = useState<StructuredType | null>(null)
   const [recording, setRecording] = useState(false)
   const [sharingLocation, setSharingLocation] = useState(false)
@@ -79,6 +81,10 @@ export function MessageComposer({
   const streamRef = useRef<MediaStream | null>(null)
   const chunksRef = useRef<BlobPart[]>([])
   const canSend = (value.trim().length > 0 || file !== null) && !pending
+
+  useEffect(() => {
+    setSendOnEnter(readBooleanPreference(SEND_ON_ENTER_KEY, true))
+  }, [])
 
   useEffect(() => {
     const handlePageBack = (event: PopStateEvent) => {
@@ -313,7 +319,7 @@ export function MessageComposer({
           placeholder={file ? t.chat.mediaCaptionPlaceholder : t.chat.messagePlaceholder}
           onChange={(event) => { setValue(event.target.value); resize() }}
           onKeyDown={(event) => {
-            if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return
+            if (!sendOnEnter || event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return
             event.preventDefault()
             void submit()
           }}
