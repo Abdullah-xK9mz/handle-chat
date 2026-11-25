@@ -154,10 +154,15 @@ export function AdminView({ currentUserId }: Props) {
 
   useEffect(() => {
     let cancelled = false
-    const refresh = () => edgeRequest<{ reports: AdminReport[] }>({ action: 'admin-list-reports' })
-      .then((result) => { if (!cancelled) setReports(result.reports) })
-      .catch(() => undefined)
-    const timer = window.setInterval(() => { void refresh() }, 5000)
+    const refresh = () => {
+      void edgeRequest<{ reports: AdminReport[] }>({ action: 'admin-list-reports' })
+        .then((result) => { if (!cancelled) setReports(result.reports) })
+        .catch(() => undefined)
+      void edgeRequest<{ conversations: AdminConversation[] }>({ action: 'admin-list-conversations' })
+        .then((result) => { if (!cancelled) setConversations(result.conversations) })
+        .catch(() => undefined)
+    }
+    const timer = window.setInterval(refresh, 5000)
     return () => { cancelled = true; window.clearInterval(timer) }
   }, [])
 
