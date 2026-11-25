@@ -8,9 +8,11 @@
 2. ارفع محتويات مجلد الموقع إلى جذر مستودع جديد على GitHub، على الفرع main. ارفع الملفات والمجلدات نفسها، وليس ملف ZIP.
 3. اجعل المستودع Public إذا كنت تستخدم GitHub Free.
 4. افتح Settings ثم Pages، واختر GitHub Actions في خانة Source.
-5. افتح Actions وانتظر انتهاء Deploy Handle to GitHub Pages. رابط الموقع سيظهر في Settings ثم Pages.
+5. افتح Actions وانتظر انتهاء Deploy Message to GitHub Pages. رابط الموقع سيظهر في Settings ثم Pages.
 
 ملف البداية البرمجي هو app/page.tsx. أثناء النشر، GitHub Actions يبني الموقع ويُنشئ الصفحة الرئيسية في out/index.html وينشر مجلد out. إعداد البناء يضبط رابط المستودع تلقائيًا.
+
+أيقونة Message المربعة بمقاس 512×512 موجودة في public/icon-512.png، والنسخة المتجهة القابلة للتكبير في public/icon.svg.
 
 ## التشغيل على جهازك
 

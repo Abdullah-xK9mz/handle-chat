@@ -30,6 +30,11 @@ export const metadata: Metadata = {
         url: `${publicBasePath}/icon.svg`,
         type: 'image/svg+xml',
       },
+      {
+        url: `${publicBasePath}/icon-512.png`,
+        type: 'image/png',
+        sizes: '512x512',
+      },
     ],
     apple: `${publicBasePath}/apple-icon.png`,
   },

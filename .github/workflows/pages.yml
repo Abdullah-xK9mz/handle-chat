@@ -1,4 +1,4 @@
-name: Deploy Handle to GitHub Pages
+name: Deploy Message to GitHub Pages
 
 on:
   push:
