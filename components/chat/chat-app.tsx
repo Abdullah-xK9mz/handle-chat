@@ -19,6 +19,7 @@ import {
 
 export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   const { t } = useI18n()
+  const [profile, setProfile] = useState(currentUser)
   const [activeId, setActiveId] = useState<number | null>(null)
   const activeIdRef = useRef<number | null>(null)
   const [section, setSection] = useState<SidebarSection>('chats')
@@ -27,11 +28,13 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   const deepLinkHandled = useRef(false)
   const { data, error, isLoading, mutate } = useSWR<{
     conversations: ConversationSummary[]
-  }>('/api/conversations', fetcher, { refreshInterval: 3000 })
+  }>('/api/conversations', fetcher, { refreshInterval: 30_000 })
 
   const conversations = data?.conversations ?? []
   const active = conversations.find((c) => c.id === activeId) ?? null
   const seenMessagesRef = useRef<Map<number, string> | null>(null)
+
+  useEffect(() => { setProfile(currentUser) }, [currentUser])
 
   useEffect(() => {
     let disposed = false
@@ -51,7 +54,31 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
           void mutate()
           window.dispatchEvent(new CustomEvent('handle-chat-updated', { detail: { conversationId } }))
         })
-        .subscribe()
+        .on('broadcast', { event: 'statuses-updated' }, () => {
+          window.dispatchEvent(new CustomEvent('handle-statuses-updated'))
+        })
+        .on('broadcast', { event: 'profile-updated' }, () => {
+          void edgeRequest<CurrentUser>({ action: 'me' })
+            .then((updated) => setProfile(updated))
+            .catch(() => undefined)
+        })
+        .on('broadcast', { event: 'account-updated' }, () => {
+          void mutate()
+          window.dispatchEvent(new CustomEvent('handle-chat-account-updated'))
+        })
+        .on('broadcast', { event: 'access-updated' }, () => {
+          void edgeRequest<CurrentUser>({ action: 'me' })
+            .then((updated) => setProfile(updated))
+            .catch(() => undefined)
+        })
+        .subscribe((status) => {
+          if (status !== 'SUBSCRIBED') return
+          void mutate()
+          void edgeRequest<CurrentUser>({ action: 'me' })
+            .then((updated) => setProfile(updated))
+            .catch(() => undefined)
+          window.dispatchEvent(new CustomEvent('handle-statuses-updated'))
+        })
     }).catch(() => undefined)
 
     return () => {
@@ -172,7 +199,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
           const before = previous.get(conversation.id)
           if (
             conversation.lastSenderId &&
-            conversation.lastSenderId !== currentUser.id &&
+            conversation.lastSenderId !== profile.id &&
             !conversation.isMuted &&
             conversation.lastMessageAt !== before
           ) {
@@ -211,7 +238,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
       }
     }
     seenMessagesRef.current = current
-  }, [conversations, currentUser.id, data, t.chat])
+  }, [conversations, profile.id, data, t.chat])
 
   function openConversation(id: number) {
     prefetchConversation(id)
@@ -251,7 +278,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
           )}
         >
           <Sidebar
-            currentUser={currentUser}
+              currentUser={profile}
             conversations={conversations}
             contactNames={contactNames}
             isLoading={isLoading}
@@ -275,8 +302,8 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
             <ConversationView
               key={activeId}
               conversationId={activeId}
-              currentUserId={currentUser.id}
-              isAdmin={currentUser.isAdmin}
+              currentUserId={profile.id}
+              isAdmin={profile.isAdmin}
               otherUserId={active?.otherUserId}
               fallbackName={active?.otherName}
               displayNameOverride={active?.otherUserId ? contactNames[active.otherUserId] : undefined}

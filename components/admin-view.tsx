@@ -1,13 +1,13 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Search, Shield, Trash2 } from 'lucide-react'
 import { UserAvatar } from '@/components/chat/user-avatar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/components/i18n-provider'
-import { edgeRequest } from '@/lib/supabase'
+import { createRealtimeClient, edgeRequest } from '@/lib/supabase'
 
 type AdminUser = {
   id: string
@@ -90,11 +90,17 @@ export function AdminView({ currentUserId }: Props) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const selectedReportRef = useRef<AdminReport | null>(null)
+  const selectedConversationRef = useRef<number | null>(null)
+  const selectedUserIdRef = useRef<string | null>(null)
 
   const selectedUser = users.find((user) => user.id === selectedUserId) ?? null
   const selectedReport = reports.find((report) => report.id === selectedReportId) ?? null
   const selectedRequest = messageRequests.find((request) => request.conversationId === selectedRequestId) ?? null
   const openReportCount = reports.filter((report) => report.status === 'open').length
+  useEffect(() => { selectedReportRef.current = selectedReport }, [selectedReport])
+  useEffect(() => { selectedConversationRef.current = selectedConversation }, [selectedConversation])
+  useEffect(() => { selectedUserIdRef.current = selectedUserId }, [selectedUserId])
   const filteredUsers = useMemo(() => {
     const query = userQuery.trim().replace(/^@/, '').toLocaleLowerCase()
     if (!query) return users
@@ -143,28 +149,60 @@ export function AdminView({ currentUserId }: Props) {
   }, [t.errors.GENERIC])
 
   useEffect(() => {
-    if (section !== 'requests') return
     let cancelled = false
-    const refresh = () => edgeRequest<{ requests: AdminMessageRequest[] }>({ action: 'admin-list-message-requests' })
-      .then((result) => { if (!cancelled) setMessageRequests(result.requests) })
-      .catch(() => undefined)
-    const timer = window.setInterval(() => { void refresh() }, 5000)
-    return () => { cancelled = true; window.clearInterval(timer) }
-  }, [section])
-
-  useEffect(() => {
-    let cancelled = false
-    const refresh = () => {
-      void edgeRequest<{ reports: AdminReport[] }>({ action: 'admin-list-reports' })
-        .then((result) => { if (!cancelled) setReports(result.reports) })
-        .catch(() => undefined)
-      void edgeRequest<{ conversations: AdminConversation[] }>({ action: 'admin-list-conversations' })
-        .then((result) => { if (!cancelled) setConversations(result.conversations) })
+    let realtimeClient: Awaited<ReturnType<typeof createRealtimeClient>> | null = null
+    const refreshAll = () => {
+      void Promise.allSettled([
+        edgeRequest<{ users: AdminUser[] }>({ action: 'admin-list-users' }),
+        edgeRequest<{ conversations: AdminConversation[] }>({ action: 'admin-list-conversations' }),
+        edgeRequest<{ reports: AdminReport[] }>({ action: 'admin-list-reports' }),
+        edgeRequest<{ requests: AdminMessageRequest[] }>({ action: 'admin-list-message-requests' }),
+      ]).then(([userResult, conversationResult, reportResult, requestResult]) => {
+        if (cancelled) return
+        if (userResult.status === 'fulfilled') setUsers(userResult.value.users)
+        if (conversationResult.status === 'fulfilled') setConversations(conversationResult.value.conversations)
+        if (reportResult.status === 'fulfilled') setReports(reportResult.value.reports)
+        if (requestResult.status === 'fulfilled') setMessageRequests(requestResult.value.requests)
+      })
+      const userId = selectedUserIdRef.current
+      if (userId) {
+        void edgeRequest<{ devices: AdminDevice[] }>({ action: 'admin-list-devices', userId })
+          .then((result) => { if (!cancelled && selectedUserIdRef.current === userId) setDevices(result.devices) })
+          .catch(() => undefined)
+      }
+    }
+    const refreshSelectedMessages = (resource: string | null) => {
+      const report = selectedReportRef.current
+      const conversationId = resource === 'reported-messages'
+        ? report?.conversation_id ?? selectedConversationRef.current
+        : selectedConversationRef.current
+      if (conversationId == null) return
+      void edgeRequest<{ messages: AdminMessage[] }>({ action: 'admin-get-messages', conversationId })
+        .then((result) => { if (!cancelled) setMessages(result.messages) })
         .catch(() => undefined)
     }
-    const timer = window.setInterval(refresh, 5000)
-    return () => { cancelled = true; window.clearInterval(timer) }
-  }, [])
+
+    void createRealtimeClient().then(async (client) => {
+      if (cancelled) { await client.removeAllChannels(); return }
+      realtimeClient = client
+      await client.realtime.setAuth()
+      if (cancelled) { await client.removeAllChannels(); return }
+      client.channel(`admin-updates:${currentUserId}`, { config: { private: true } })
+        .on('broadcast', { event: 'admin-updated' }, ({ payload }) => {
+          const resource = typeof payload?.resource === 'string' ? payload.resource : null
+          refreshAll()
+          if (resource === 'reported-messages') refreshSelectedMessages(resource)
+        })
+        .subscribe((status) => { if (status === 'SUBSCRIBED') refreshAll() })
+    }).catch(() => undefined)
+
+    const timer = window.setInterval(refreshAll, 30_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      if (realtimeClient) void realtimeClient.removeAllChannels()
+    }
+  }, [currentUserId])
 
   useEffect(() => {
     if (!selectedUserId) { setDevices([]); return }

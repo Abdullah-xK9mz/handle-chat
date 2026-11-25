@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import useSWR from 'swr'
 import {
@@ -141,7 +141,7 @@ export function ConversationView({
   const { t, locale } = useI18n()
   const key = `/api/conversations/${conversationId}/messages`
   const { data, error, mutate } = useSWR<ConversationDetail>(key, fetcher, {
-    refreshInterval: 2000,
+    refreshInterval: 30_000,
   })
   const [sendError, setSendError] = useState<string | null>(null)
   const [mediaUrls, setMediaUrls] = useState<Record<string, { url: string; expiresAt: number }>>({})
@@ -198,15 +198,6 @@ export function ConversationView({
     return () => window.removeEventListener('popstate', handlePageBack)
   }, [])
 
-  useEffect(() => {
-    const handleChatUpdated = (event: Event) => {
-      const detail = (event as CustomEvent<{ conversationId?: number }>).detail
-      if (detail?.conversationId === conversationId) void mutate()
-    }
-    window.addEventListener('handle-chat-updated', handleChatUpdated)
-    return () => window.removeEventListener('handle-chat-updated', handleChatUpdated)
-  }, [conversationId, mutate])
-
   const messages = data?.messages ?? []
   const lastId = messages.at(-1)?.id
   const profileName = data?.other?.name ?? fallbackName ?? t.chat.conversationFallback
@@ -229,14 +220,37 @@ export function ConversationView({
     setGroupNameDraft(data?.conversation?.name ?? '')
   }, [infoOpen, data?.conversation?.id])
 
+  const refreshGroupRequests = useCallback(async () => {
+    try {
+      const result = await edgeRequest<{ requests: typeof groupRequests }>({ action: 'list-group-requests', conversationId })
+      setGroupRequests(result.requests)
+    } catch {
+      setGroupRequests([])
+    }
+  }, [conversationId])
+
   useEffect(() => {
     if (!infoOpen || !isGroup || !isGroupAdmin) return
-    let active = true
-    void edgeRequest<{ requests: typeof groupRequests }>({ action: 'list-group-requests', conversationId })
-      .then((result) => { if (active) setGroupRequests(result.requests) })
-      .catch(() => { if (active) setGroupRequests([]) })
-    return () => { active = false }
-  }, [conversationId, infoOpen, isGroup, isGroupAdmin])
+    void refreshGroupRequests()
+  }, [infoOpen, isGroup, isGroupAdmin, refreshGroupRequests])
+
+  useEffect(() => {
+    const handleChatUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ conversationId?: number }>).detail
+      if (detail?.conversationId === conversationId) {
+        void mutate()
+        if (infoOpen && isGroup && isGroupAdmin) void refreshGroupRequests()
+      }
+    }
+    const handleAccountUpdated = () => { void mutate() }
+    window.addEventListener('handle-chat-updated', handleChatUpdated)
+    window.addEventListener('handle-chat-account-updated', handleAccountUpdated)
+    return () => {
+      window.removeEventListener('handle-chat-updated', handleChatUpdated)
+      window.removeEventListener('handle-chat-account-updated', handleAccountUpdated)
+    }
+  }, [conversationId, infoOpen, isGroup, isGroupAdmin, mutate, refreshGroupRequests])
+
   const otherReadAt = data?.otherLastReadAt
     ? new Date(data.otherLastReadAt).getTime()
     : 0

@@ -9,6 +9,7 @@ import { UserAvatar } from '@/components/chat/user-avatar'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { useI18n } from '@/components/i18n-provider'
 import {
+  createRealtimeClient,
   edgeRequest,
   signOutOtherSessions,
   signOut as supabaseSignOut,
@@ -106,6 +107,51 @@ export function SettingsView({
   useEffect(() => {
     setNotificationsEnabled(localStorage.getItem('handle.notifications.enabled.v1') === 'true')
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    let realtimeClient: Awaited<ReturnType<typeof createRealtimeClient>> | null = null
+    const refreshDevices = () => {
+      void edgeRequest<{ devices: KnownDevice[] }>({ action: 'list-own-devices' })
+        .then((result) => { if (!cancelled) setDevices(result.devices) })
+        .catch(() => undefined)
+    }
+    const refreshProfile = () => {
+      void edgeRequest<Profile>({ action: 'me' })
+        .then((updated) => {
+          if (cancelled) return
+          setDisplayName(updated.name)
+          setProfileAbout(updated.about ?? '')
+          setProfileImage(updated.image)
+        })
+        .catch(() => undefined)
+    }
+
+    void createRealtimeClient().then(async (client) => {
+      if (cancelled) { await client.removeAllChannels(); return }
+      realtimeClient = client
+      await client.realtime.setAuth()
+      if (cancelled) { await client.removeAllChannels(); return }
+      client.channel(`user-updates:${id}`, { config: { private: true } })
+        .on('broadcast', { event: 'profile-updated' }, refreshProfile)
+        .on('broadcast', { event: 'account-updated' }, () => {
+          refreshDevices()
+          void loadBlockedContacts()
+        })
+        .on('broadcast', { event: 'access-updated' }, refreshProfile)
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            refreshProfile()
+            refreshDevices()
+          }
+        })
+    }).catch(() => undefined)
+
+    return () => {
+      cancelled = true
+      if (realtimeClient) void realtimeClient.removeAllChannels()
+    }
+  }, [id])
 
   useEffect(() => {
     let cancelled = false

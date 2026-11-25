@@ -14,7 +14,7 @@ import { UserAvatar } from './user-avatar'
 export function StatusStrip({ currentUser, fullPage = false }: { currentUser: CurrentUser; fullPage?: boolean }) {
   const { t } = useI18n()
   const { data, mutate } = useSWR<{ statuses: StatusEntry[] }>('/api/statuses', fetcher, {
-    refreshInterval: 15_000,
+    refreshInterval: 30_000,
   })
   const [creating, setCreating] = useState(false)
   const [viewing, setViewing] = useState<StatusEntry | null>(null)
@@ -24,6 +24,22 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
   const [error, setError] = useState<string | null>(null)
   const [viewUrl, setViewUrl] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const refresh = () => { void mutate() }
+    window.addEventListener('handle-statuses-updated', refresh)
+    return () => window.removeEventListener('handle-statuses-updated', refresh)
+  }, [mutate])
+
+  useEffect(() => {
+    const nextExpiry = data?.statuses
+      .map((status) => new Date(status.expiresAt).getTime())
+      .filter((time) => time > Date.now())
+      .sort((left, right) => left - right)[0]
+    if (!nextExpiry) return
+    const timer = window.setTimeout(() => { void mutate() }, Math.max(0, nextExpiry - Date.now() + 100))
+    return () => window.clearTimeout(timer)
+  }, [data?.statuses, mutate])
 
   function startStatusEditor() {
     setCreating(true)
