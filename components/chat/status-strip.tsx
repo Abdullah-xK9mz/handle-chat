@@ -24,6 +24,7 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
   const [error, setError] = useState<string | null>(null)
   const [viewUrl, setViewUrl] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const viewRequestRef = useRef(0)
 
   useEffect(() => {
     const refresh = () => { void mutate() }
@@ -52,7 +53,10 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
         ? (state as { handleChatPage?: string }).handleChatPage
         : undefined
       if (page !== 'status-editor') setCreating(false)
-      if (page !== 'status-viewer') setViewing(null)
+      if (page !== 'status-viewer') {
+        viewRequestRef.current += 1
+        setViewing(null)
+      }
     }
     restorePage(window.history.state)
     const handlePageBack = (event: PopStateEvent) => restorePage(event.state)
@@ -102,6 +106,7 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
   }
 
   async function openStatus(status: StatusEntry, addHistory = false) {
+    const requestId = ++viewRequestRef.current
     if (addHistory) pushChatPage('status-viewer')
     setViewing(status)
     setViewUrl(null)
@@ -113,9 +118,9 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
         statusId: status.id,
         mediaPath: status.mediaPath,
       })
-      setViewUrl(result.url)
+      if (viewRequestRef.current === requestId) setViewUrl(result.url)
     } catch {
-      setViewUrl(null)
+      if (viewRequestRef.current === requestId) setViewUrl(null)
     }
   }
 

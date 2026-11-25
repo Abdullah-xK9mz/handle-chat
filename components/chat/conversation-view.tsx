@@ -500,6 +500,22 @@ export function ConversationView({
     }
   }, [conversationId, mediaUrls, messages])
 
+  useEffect(() => {
+    const refreshAt = Math.min(
+      ...Object.values(mediaUrls).map(({ expiresAt }) => expiresAt * 1000 - 5 * 60 * 1000),
+    )
+    if (!Number.isFinite(refreshAt)) return
+
+    const timer = window.setTimeout(() => {
+      const refreshWindow = Math.floor(Date.now() / 1000) + 300
+      setMediaUrls((current) => Object.fromEntries(
+        Object.entries(current).filter(([, media]) => media.expiresAt > refreshWindow),
+      ))
+    }, Math.max(0, refreshAt - Date.now()))
+
+    return () => window.clearTimeout(timer)
+  }, [mediaUrls])
+
   async function handleSend(body: string, file: File | null, replyToId?: number) {
     setSendError(null)
     const optimistic: ChatMessage = {
