@@ -254,7 +254,12 @@ export async function createAccount(
 }
 
 export async function signOut() {
-  const session = await getSession()
+  let session: Session | null = null
+  try {
+    session = await getSession()
+  } catch {
+    // A stale or unreachable session must not prevent local sign-out.
+  }
   try {
     if (session) {
       await fetch(`${SUPABASE_URL}/auth/v1/logout`, {

@@ -108,6 +108,7 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
   async function openStatus(status: StatusEntry, addHistory = false) {
     const requestId = ++viewRequestRef.current
     if (addHistory) pushChatPage('status-viewer')
+    setError(null)
     setViewing(status)
     setViewUrl(null)
     if (!status.mediaPath) return
@@ -120,7 +121,10 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
       })
       if (viewRequestRef.current === requestId) setViewUrl(result.url)
     } catch {
-      if (viewRequestRef.current === requestId) setViewUrl(null)
+      if (viewRequestRef.current === requestId) {
+        setViewUrl(null)
+        setError(errorMessage(t, 'GENERIC'))
+      }
     }
   }
 
@@ -131,6 +135,9 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
       await edgeRequest({ action: 'delete-status', statusId: viewing.id })
       closeChatPage('status-viewer')
       await mutate()
+    } catch (caught) {
+      const code = typeof caught === 'object' && caught && 'code' in caught ? caught.code : 'GENERIC'
+      setError(errorMessage(t, code))
     } finally {
       setBusy(false)
     }
@@ -241,6 +248,7 @@ export function StatusStrip({ currentUser, fullPage = false }: { currentUser: Cu
                 : <img src={viewUrl} alt={viewing.mediaName ?? t.chat.statusTitle} className="max-h-[70dvh] max-w-full rounded-xl object-contain" />
             )}
             {viewing.body && <p dir="auto" className="max-w-xl whitespace-pre-wrap text-center text-lg">{viewing.body}</p>}
+            {error && <p role="alert" className="max-w-xl rounded-lg bg-black/70 px-3 py-2 text-center text-sm text-red-200">{error}</p>}
             <time className="text-xs text-white/70">{new Date(viewing.createdAt).toLocaleString()}</time>
           </div>
           <Button type="button" variant="ghost" size="icon" className="absolute end-2 z-10 text-white hover:bg-white/15" onClick={() => moveStatus(1)} aria-label={t.chat.nextStatus}><ArrowRight className="rtl:rotate-180" /></Button>

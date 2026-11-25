@@ -80,10 +80,26 @@ export function MessageComposer({
   const recorderRef = useRef<MediaRecorder | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const chunksRef = useRef<BlobPart[]>([])
+  const recordingGenerationRef = useRef(0)
   const canSend = (value.trim().length > 0 || file !== null) && !pending
 
   useEffect(() => {
     setSendOnEnter(readBooleanPreference(SEND_ON_ENTER_KEY, true))
+  }, [])
+
+  useEffect(() => () => {
+    recordingGenerationRef.current += 1
+    const recorder = recorderRef.current
+    if (recorder) {
+      recorder.ondataavailable = null
+      recorder.onstop = null
+      if (recorder.state !== 'inactive') {
+        try { recorder.stop() } catch { /* The recorder may already have stopped. */ }
+      }
+    }
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+    recorderRef.current = null
   }, [])
 
   useEffect(() => {
@@ -177,33 +193,50 @@ export function MessageComposer({
       setRecording(false)
       return
     }
+    const generation = ++recordingGenerationRef.current
+    let stream: MediaStream | null = null
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      streamRef.current = stream
+      const activeStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      stream = activeStream
+      if (recordingGenerationRef.current !== generation) {
+        activeStream.getTracks().forEach((track) => track.stop())
+        return
+      }
+      streamRef.current = activeStream
       const supportedMime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4']
         .find((mime) => MediaRecorder.isTypeSupported(mime))
       const recorder = supportedMime
-        ? new MediaRecorder(stream, { mimeType: supportedMime })
-        : new MediaRecorder(stream)
+        ? new MediaRecorder(activeStream, { mimeType: supportedMime })
+        : new MediaRecorder(activeStream)
       chunksRef.current = []
       recorder.ondataavailable = (event) => {
-        if (event.data.size) chunksRef.current.push(event.data)
+        if (recordingGenerationRef.current === generation && event.data.size) chunksRef.current.push(event.data)
       }
       recorder.onstop = () => {
-        const mime = recorder.mimeType.split(';')[0] || 'audio/webm'
-        const extension = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'm4a' : 'webm'
-        const blob = new Blob(chunksRef.current, { type: mime })
-        if (blob.size) handleFile(new File([blob], `voice-message.${extension}`, { type: mime }))
-        stream.getTracks().forEach((track) => track.stop())
-        streamRef.current = null
-        recorderRef.current = null
+        if (recordingGenerationRef.current === generation) {
+          setRecording(false)
+          const mime = recorder.mimeType.split(';')[0] || 'audio/webm'
+          const extension = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'm4a' : 'webm'
+          const blob = new Blob(chunksRef.current, { type: mime })
+          if (blob.size) handleFile(new File([blob], `voice-message.${extension}`, { type: mime }))
+        }
+        activeStream.getTracks().forEach((track) => track.stop())
+        if (streamRef.current === activeStream) streamRef.current = null
+        if (recorderRef.current === recorder) recorderRef.current = null
       }
       recorder.start()
       recorderRef.current = recorder
       setLocalError(null)
       setRecording(true)
     } catch {
-      setLocalError(t.errors.MICROPHONE_PERMISSION)
+      if (recordingGenerationRef.current === generation) {
+        recordingGenerationRef.current += 1
+        stream?.getTracks().forEach((track) => track.stop())
+        if (streamRef.current === stream) streamRef.current = null
+        recorderRef.current = null
+        setRecording(false)
+        setLocalError(t.errors.MICROPHONE_PERMISSION)
+      }
     }
   }
 

@@ -22,8 +22,14 @@ export default function HomePage() {
         if (cancelled) return
         setFailed(true)
         if (error instanceof SupabaseError && error.status === 401) {
-          const chat = new URLSearchParams(window.location.search).get('chat')
-          if (chat) localStorage.setItem('handle.pending.deepLink.v1', chat)
+          const params = new URLSearchParams(window.location.search)
+          const pending = new URLSearchParams()
+          const chat = params.get('chat')
+          const groupInvite = params.get('groupInvite')
+          if (chat) pending.set('chat', chat)
+          if (groupInvite) pending.set('groupInvite', groupInvite)
+          const pendingValue = pending.toString()
+          if (pendingValue) localStorage.setItem('handle.pending.deepLink.v1', pendingValue)
           router.replace('/sign-in')
         }
       })

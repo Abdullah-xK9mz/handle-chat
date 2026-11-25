@@ -12,6 +12,18 @@ import { LanguageToggle } from './language-toggle'
 
 type Mode = 'sign-in' | 'sign-up'
 
+function consumePendingDeepLink() {
+  const pending = localStorage.getItem('handle.pending.deepLink.v1')
+  localStorage.removeItem('handle.pending.deepLink.v1')
+  if (!pending) return null
+
+  const params = new URLSearchParams(pending)
+  if (params.has('chat') || params.has('groupInvite')) return `/?${params.toString()}`
+
+  // Older releases stored only the username as a plain string.
+  return `/?chat=${encodeURIComponent(pending)}`
+}
+
 export function AuthForm({ mode }: { mode: Mode }) {
   const router = useRouter()
   const { t } = useI18n()
@@ -29,9 +41,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
         return
       }
       if (cancelled) return
-      const pendingChat = localStorage.getItem('handle.pending.deepLink.v1')
-      localStorage.removeItem('handle.pending.deepLink.v1')
-      router.replace(pendingChat ? `/?chat=${encodeURIComponent(pendingChat)}` : '/')
+      router.replace(consumePendingDeepLink() ?? '/')
     }).catch(() => undefined)
     return () => { cancelled = true }
   }, [router])
@@ -54,9 +64,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
       if (isSignUp) await createAccount(username, name || username, password)
       else await signInWithUsername(username, password)
 
-      const pendingChat = localStorage.getItem('handle.pending.deepLink.v1')
-      localStorage.removeItem('handle.pending.deepLink.v1')
-      router.replace(pendingChat ? `/?chat=${encodeURIComponent(pendingChat)}` : '/')
+      router.replace(consumePendingDeepLink() ?? '/')
       router.refresh()
     } catch (caught) {
       if (isSignUp && caught instanceof SupabaseError && caught.code === 'USERNAME_TAKEN') {

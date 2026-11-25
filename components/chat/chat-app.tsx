@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import useSWR, { preload } from 'swr'
 import { MessageCircle } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
+import { errorMessage } from '@/lib/i18n/dictionaries'
 import { cn } from '@/lib/utils'
 import { chatRequest, createRealtimeClient, edgeRequest } from '@/lib/supabase'
 import { getNativeApp } from '@/lib/native-app'
@@ -162,8 +163,11 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
       setActiveId(id)
       window.history.pushState({ handleChatConversation: id }, '', window.location.href)
       void mutate()
-    }).catch(() => undefined)
-  }, [mutate, t.chat.groupInvitePending, t.chat.invalidGroupInvite])
+    }).catch((caught) => {
+      const code = typeof caught === 'object' && caught && 'code' in caught ? caught.code : 'GENERIC'
+      setJoinNotice(errorMessage(t, code))
+    })
+  }, [mutate, t, t.chat.groupInvitePending, t.chat.invalidGroupInvite])
 
   useEffect(() => {
     activeIdRef.current = activeId

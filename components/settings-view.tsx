@@ -102,6 +102,7 @@ export function SettingsView({
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const scannerRunning = useRef(false)
+  const scannerGenerationRef = useRef(0)
   const photoRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -174,8 +175,10 @@ export function SettingsView({
   }, [username])
 
   useEffect(() => () => {
+    scannerGenerationRef.current += 1
     scannerRunning.current = false
     streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
   }, [])
 
   useEffect(() => {
@@ -408,38 +411,59 @@ export function SettingsView({
       setScannerMessage(t.settings.scannerUnsupported)
       return
     }
+    stopScanner()
+    const generation = ++scannerGenerationRef.current
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+      if (scannerGenerationRef.current !== generation) {
+        stream.getTracks().forEach((track) => track.stop())
+        return
+      }
       streamRef.current = stream
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        await videoRef.current.play()
+      const video = videoRef.current
+      if (!video) {
+        stream.getTracks().forEach((track) => track.stop())
+        streamRef.current = null
+        return
+      }
+      video.srcObject = stream
+      await video.play()
+      if (scannerGenerationRef.current !== generation) {
+        stream.getTracks().forEach((track) => track.stop())
+        if (streamRef.current === stream) streamRef.current = null
+        return
       }
       scannerRunning.current = true
       setScanning(true)
       const detector = new Detector({ formats: ['qr_code'] })
       const scan = async () => {
-        if (!scannerRunning.current || !videoRef.current) return
+        if (!scannerRunning.current || scannerGenerationRef.current !== generation || !videoRef.current) return
         try {
           const codes = await detector.detect(videoRef.current)
+          if (scannerGenerationRef.current !== generation) return
           if (codes[0]?.rawValue) {
             openScannedValue(codes[0].rawValue)
             return
           }
         } catch {
+          if (scannerGenerationRef.current !== generation) return
           setScannerMessage(t.settings.scannerCameraError)
           stopScanner()
           return
         }
-        window.setTimeout(() => void scan(), 250)
+        if (scannerGenerationRef.current === generation) window.setTimeout(() => void scan(), 250)
       }
       void scan()
     } catch {
-      setScannerMessage(t.settings.scannerCameraError)
+      if (scannerGenerationRef.current === generation) {
+        stopScanner()
+        setScannerMessage(t.settings.scannerCameraError)
+      }
     }
   }
 
   function stopScanner() {
+    scannerGenerationRef.current += 1
     scannerRunning.current = false
     streamRef.current?.getTracks().forEach((track) => track.stop())
     streamRef.current = null
