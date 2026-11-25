@@ -1,4 +1,4 @@
-# Handle
+# Message
 
 دي نسخة موقع المحادثة بنفس التصميم، جاهزة للنشر على GitHub Pages. حسابات المستخدمين والمحادثات والرسائل محفوظة في قاعدة Supabase سحابية وتظهر على الأجهزة المختلفة.
 
@@ -18,8 +18,8 @@
 
 ## قاعدة البيانات
 
-مشروع Supabase باسم handle-chat جاهز في منطقة فرانكفورت، ومخطط البيانات ووظيفة handle-chat تم إعدادهم. رابط المشروع:
-https://supabase.com/dashboard/project/nvujfvmnquiiirytxnwr
+مشروع Supabase باسم Message Chat جاهز في منطقة أيرلندا، ومخطط البيانات ووظيفة handle-chat تم إعدادهم. رابط المشروع:
+https://supabase.com/dashboard/project/xecdfgxbcmltubkwlbah
 
 المفتاح الموجود في ملفات المتصفح مفتاح نشر عام. المفتاح الخاص موجود داخل Supabase فقط ولا ترفعه على GitHub.
 

@@ -1,8 +1,8 @@
 import { normalizeUsername, placeholderEmail } from './username'
 
-export const SUPABASE_URL = 'https://nvujfvmnquiiirytxnwr.supabase.co'
+export const SUPABASE_URL = 'https://xecdfgxbcmltubkwlbah.supabase.co'
 export const SUPABASE_PUBLISHABLE_KEY =
-  'sb_publishable_9rUSTLd0IF1jMrLZbuyasw_u0JQHOlu'
+  'sb_publishable_SST_ki3R2BGn47v-to8vOw_K3oXnM9T'
 
 export async function createRealtimeClient() {
   const { createClient } = await import('@supabase/supabase-js')
@@ -183,6 +183,21 @@ export async function getSession(): Promise<Session | null> {
     })
   }
   return refreshInFlight
+}
+
+export async function signOutOtherSessions() {
+  const session = await getSession()
+  if (!session) throw new SupabaseError('UNAUTHORIZED', 401)
+  const response = await fetch(`${SUPABASE_URL}/auth/v1/logout?scope=others`, {
+    method: 'POST',
+    headers: {
+      apikey: SUPABASE_PUBLISHABLE_KEY,
+      Authorization: `Bearer ${session.access_token}`,
+    },
+  })
+  if (!response.ok) {
+    throw new SupabaseError(response.status === 401 ? 'UNAUTHORIZED' : 'GENERIC', response.status)
+  }
 }
 
 async function passwordSignIn(username: string, password: string) {

@@ -997,7 +997,7 @@ export function ConversationView({
                       ) : message.body ? (
                         <p
                           dir="auto"
-                          className="select-none text-sm leading-relaxed break-words whitespace-pre-wrap"
+                          className="chat-message-text select-none text-sm leading-relaxed break-words whitespace-pre-wrap"
                         >
                           {message.body}
                         </p>

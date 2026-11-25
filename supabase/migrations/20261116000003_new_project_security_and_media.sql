@@ -61,7 +61,7 @@ BEGIN
           SELECT 1 FROM storage.objects object
           WHERE object.bucket_id = 'avatars' AND object.name = p_avatar_path
         ) THEN RAISE EXCEPTION 'INVALID_IMAGE'; END IF;
-      v_image := 'https://nvujfvmnquiiirytxnwr.supabase.co/storage/v1/object/public/avatars/' || p_avatar_path;
+      v_image := 'https://xecdfgxbcmltubkwlbah.supabase.co/storage/v1/object/public/avatars/' || p_avatar_path;
     END IF;
   END IF;
 

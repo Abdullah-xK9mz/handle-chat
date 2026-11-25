@@ -32,6 +32,12 @@ export function I18nProvider({
     document.documentElement.dir = locale === 'ar' ? 'rtl' : 'ltr'
   }, [locale])
 
+  useEffect(() => {
+    const size = window.localStorage.getItem('handle.chat.message-size.v1')
+    document.documentElement.dataset.chatMessageSize =
+      size === 'small' || size === 'large' ? size : 'normal'
+  }, [])
+
   function updateLocale(nextLocale: Locale) {
     window.localStorage.setItem('handle-locale', nextLocale)
     setLocale(nextLocale)

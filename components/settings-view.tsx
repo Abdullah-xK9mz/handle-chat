@@ -3,13 +3,14 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Camera, Check, LogOut, QrCode, Save, ScanLine } from 'lucide-react'
+import { ArrowLeft, Camera, Check, Laptop, LogOut, QrCode, Save, ScanLine, Shield, Smartphone, Tablet, UserRoundX } from 'lucide-react'
 import { LanguageToggle } from '@/components/language-toggle'
 import { UserAvatar } from '@/components/chat/user-avatar'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { useI18n } from '@/components/i18n-provider'
 import {
   edgeRequest,
+  signOutOtherSessions,
   signOut as supabaseSignOut,
   SupabaseError,
   uploadAvatar,
@@ -18,6 +19,39 @@ import {
 import { errorMessage } from '@/lib/i18n/dictionaries'
 import { closeChatPage, pushChatPage } from '@/lib/chat-pages'
 import { getNativeApp, pickNativeFileAsFile } from '@/lib/native-app'
+
+type KnownDevice = {
+  deviceId: string
+  lastSeenAt: string
+  userAgent: string | null
+  isCurrent: boolean
+}
+
+type BlockedUser = {
+  id: string
+  name: string
+  username: string
+  image: string | null
+}
+
+function describeDevice(userAgent: string | null) {
+  const ua = userAgent ?? ''
+  const browser = ua.includes('Edg/') ? 'Microsoft Edge'
+    : ua.includes('Firefox/') ? 'Firefox'
+      : ua.includes('Chrome/') ? 'Chrome'
+        : ua.includes('Safari/') ? 'Safari'
+          : 'Unknown browser'
+  const system = /Android/i.test(ua) ? 'Android'
+    : /iPhone|iPad|iPod/i.test(ua) ? 'iOS'
+      : /Windows/i.test(ua) ? 'Windows'
+        : /Mac OS|Macintosh/i.test(ua) ? 'macOS'
+          : /Linux/i.test(ua) ? 'Linux'
+            : 'Unknown system'
+  const type = /iPad|Tablet/i.test(ua) || (/Android/i.test(ua) && !/Mobile/i.test(ua)) ? 'tablet'
+    : /Android|iPhone|iPod|Mobile/i.test(ua) ? 'mobile'
+      : 'desktop'
+  return { browser, system, type }
+}
 
 export function SettingsView({
   id,
@@ -33,7 +67,7 @@ export function SettingsView({
   about?: string
 }) {
   const router = useRouter()
-  const { t } = useI18n()
+  const { t, locale, setLocale } = useI18n()
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [displayName, setDisplayName] = useState(name)
@@ -44,6 +78,17 @@ export function SettingsView({
   const [removePhoto, setRemovePhoto] = useState(false)
   const [saved, setSaved] = useState(false)
   const [notificationsEnabled, setNotificationsEnabled] = useState(false)
+  const [devices, setDevices] = useState<KnownDevice[]>([])
+  const [devicesLoading, setDevicesLoading] = useState(true)
+  const [devicesError, setDevicesError] = useState(false)
+  const [endingOtherSessions, setEndingOtherSessions] = useState(false)
+  const [sessionError, setSessionError] = useState<string | null>(null)
+  const [actionNotice, setActionNotice] = useState<string | null>(null)
+  const [blockedUsers, setBlockedUsers] = useState<BlockedUser[]>([])
+  const [blockedOpen, setBlockedOpen] = useState(false)
+  const [blockedLoading, setBlockedLoading] = useState(false)
+  const [blockedError, setBlockedError] = useState(false)
+  const [messageTextSize, setMessageTextSize] = useState<'small' | 'normal' | 'large'>('normal')
   const [shareUrl, setShareUrl] = useState('')
   const [copiedLink, setCopiedLink] = useState(false)
   const [scannerOpen, setScannerOpen] = useState(false)
@@ -57,6 +102,17 @@ export function SettingsView({
 
   useEffect(() => {
     setNotificationsEnabled(localStorage.getItem('handle.notifications.enabled.v1') === 'true')
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    edgeRequest<{ devices: KnownDevice[] }>({ action: 'list-own-devices' })
+      .then((result) => { if (!cancelled) setDevices(result.devices) })
+      .catch(() => { if (!cancelled) setDevicesError(true) })
+      .finally(() => { if (!cancelled) setDevicesLoading(false) })
+    const storedSize = localStorage.getItem('handle.chat.message-size.v1')
+    if (storedSize === 'small' || storedSize === 'large') setMessageTextSize(storedSize)
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
@@ -137,6 +193,61 @@ export function SettingsView({
     }
     localStorage.setItem('handle.notifications.enabled.v1', 'true')
     setNotificationsEnabled(true)
+  }
+
+  async function loadBlockedContacts() {
+    setBlockedLoading(true)
+    setBlockedError(false)
+    try {
+      const result = await edgeRequest<{ users: BlockedUser[] }>({ action: 'get-blocked-users' })
+      setBlockedUsers(result.users)
+    } catch {
+      setBlockedError(true)
+    } finally {
+      setBlockedLoading(false)
+    }
+  }
+
+  function toggleBlockedContacts() {
+    if (blockedOpen) {
+      setBlockedOpen(false)
+      return
+    }
+    setBlockedOpen(true)
+    if (!blockedUsers.length && !blockedLoading && !blockedError) void loadBlockedContacts()
+  }
+
+  async function unblockContact(blockedUser: BlockedUser) {
+    setBlockedError(false)
+    try {
+      await edgeRequest({ action: 'unblock-user', userId: blockedUser.id })
+      setBlockedUsers((users) => users.filter((user) => user.id !== blockedUser.id))
+    } catch {
+      setBlockedError(true)
+    }
+  }
+
+  async function signOutOtherDevices() {
+    if (endingOtherSessions || !window.confirm(t.settings.signOutOtherDevicesConfirm)) return
+    setEndingOtherSessions(true)
+    setActionNotice(null)
+    setSessionError(null)
+    try {
+      await signOutOtherSessions()
+      setActionNotice(t.settings.signedOutOtherDevices)
+    } catch (caught) {
+      const code = caught instanceof SupabaseError ? caught.code : 'GENERIC'
+      setSessionError(errorMessage(t, code))
+    } finally {
+      setEndingOtherSessions(false)
+    }
+  }
+
+  function changeMessageTextSize(value: string) {
+    if (value !== 'small' && value !== 'normal' && value !== 'large') return
+    setMessageTextSize(value)
+    localStorage.setItem('handle.chat.message-size.v1', value)
+    document.documentElement.dataset.chatMessageSize = value
   }
 
   function selectPhoto(selected: File | null) {
@@ -426,6 +537,88 @@ export function SettingsView({
               {error}
             </p>
           )}
+        </section>
+
+        <section className="mt-4 rounded-2xl border bg-card p-5 shadow-sm sm:p-6" aria-labelledby="privacy-title">
+          <div className="flex items-center gap-2"><Shield className="size-5 text-primary" aria-hidden="true" /><h2 id="privacy-title" className="font-semibold">{t.settings.privacy}</h2></div>
+          <p className="mt-1 text-sm text-muted-foreground">{t.settings.privacyHint}</p>
+          <p className="mt-3 rounded-xl bg-muted/60 px-3 py-2 text-xs leading-relaxed text-muted-foreground">{t.settings.statusPrivacyNote}</p>
+          <Button type="button" variant="outline" className="mt-4 gap-2" onClick={toggleBlockedContacts} aria-expanded={blockedOpen}>
+            <UserRoundX className="size-4" />{t.settings.blockedContacts} · {blockedUsers.length}
+          </Button>
+          {blockedOpen && (
+            <div className="mt-3 grid gap-2 border-t pt-3">
+              {blockedLoading ? <p className="text-sm text-muted-foreground">{t.settings.loadingBlockedContacts}</p>
+                : blockedUsers.length === 0 && !blockedError ? <p className="text-sm text-muted-foreground">{t.settings.noBlockedContacts}</p>
+                  : blockedUsers.map((blockedUser) => (
+                    <div key={blockedUser.id} className="flex min-w-0 items-center gap-3 rounded-xl bg-muted/50 p-2.5">
+                      <UserAvatar name={blockedUser.name} image={blockedUser.image} className="size-10" />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{blockedUser.name}</p>
+                        <p className="truncate text-xs text-muted-foreground" dir="ltr">@{blockedUser.username}</p>
+                      </div>
+                      <Button type="button" size="sm" variant="outline" onClick={() => void unblockContact(blockedUser)}>{t.settings.unblockContact}</Button>
+                    </div>
+                  ))}
+              {blockedError && <div role="alert" className="flex flex-wrap items-center justify-between gap-2 text-sm text-destructive"><span>{t.errors.GENERIC}</span><Button type="button" size="sm" variant="outline" onClick={() => void loadBlockedContacts()}>{t.settings.retry}</Button></div>}
+            </div>
+          )}
+        </section>
+
+        <section className="mt-4 rounded-2xl border bg-card p-5 shadow-sm sm:p-6" aria-labelledby="devices-title">
+          <div className="flex items-center gap-2"><Smartphone className="size-5 text-primary" aria-hidden="true" /><h2 id="devices-title" className="font-semibold">{t.settings.linkedDevices}</h2></div>
+          <p className="mt-1 text-sm text-muted-foreground">{t.settings.linkedDevicesHint}</p>
+          <div className="mt-4 grid gap-3">
+            {devicesLoading ? <p className="text-sm text-muted-foreground">{t.settings.loadingDevices}</p>
+              : devices.length === 0 && !devicesError ? <p className="text-sm text-muted-foreground">{t.settings.noDevices}</p>
+                : devices.map((device) => {
+                  const details = describeDevice(device.userAgent)
+                  const type = details.type === 'mobile' ? t.settings.deviceMobile : details.type === 'tablet' ? t.settings.deviceTablet : t.settings.deviceDesktop
+                  return (
+                    <div key={device.deviceId} className="flex min-w-0 items-start gap-3 rounded-xl border p-3">
+                      <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-full bg-muted">{details.type === 'mobile' ? <Smartphone className="size-4" aria-hidden="true" /> : details.type === 'tablet' ? <Tablet className="size-4" aria-hidden="true" /> : <Laptop className="size-4" aria-hidden="true" />}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-sm font-semibold">{details.browser} · {details.system}</p>
+                          {device.isCurrent && <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">{t.settings.thisDevice}</span>}
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">{t.settings.deviceType}: {type}</p>
+                        <p className="text-xs text-muted-foreground">{t.settings.deviceBrowser}: {details.browser} · {t.settings.deviceSystem}: {details.system}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{t.settings.lastDeviceActivity}: {new Date(device.lastSeenAt).toLocaleString(locale)}</p>
+                        <p className="mt-1 truncate text-[11px] text-muted-foreground" dir="ltr">ID · …{device.deviceId.slice(-8)}</p>
+                      </div>
+                    </div>
+                  )
+                })}
+            {devicesError && <div role="alert" className="flex flex-wrap items-center justify-between gap-2 text-sm text-destructive"><span>{t.errors.GENERIC}</span><Button type="button" size="sm" variant="outline" onClick={() => { setDevicesError(false); setDevicesLoading(true); void edgeRequest<{ devices: KnownDevice[] }>({ action: 'list-own-devices' }).then((result) => setDevices(result.devices)).catch(() => setDevicesError(true)).finally(() => setDevicesLoading(false)) }}>{t.settings.retry}</Button></div>}
+          </div>
+          <p className="mt-3 text-xs text-muted-foreground">{t.settings.signOutOtherDevicesHint}</p>
+          <Button type="button" variant="outline" disabled={endingOtherSessions || devicesLoading} onClick={() => void signOutOtherDevices()} className="mt-3">
+            {endingOtherSessions ? t.settings.signingOutOtherDevices : t.settings.signOutOtherDevices}
+          </Button>
+          {actionNotice && <p role="status" className="mt-2 text-sm text-muted-foreground">{actionNotice}</p>}
+          {sessionError && <p role="alert" className="mt-2 text-sm text-destructive">{sessionError}</p>}
+        </section>
+
+        <section className="mt-4 rounded-2xl border bg-card p-5 shadow-sm sm:p-6" aria-labelledby="chats-settings-title">
+          <div className="flex items-center gap-2"><span className="flex size-5 items-center justify-center text-primary" aria-hidden="true">Aa</span><h2 id="chats-settings-title" className="font-semibold">{t.settings.chats}</h2></div>
+          <p className="mt-1 text-sm text-muted-foreground">{t.settings.chatDisplayHint}</p>
+          <label htmlFor="message-text-size" className="mt-4 block text-sm font-medium">{t.settings.messageTextSize}</label>
+          <select id="message-text-size" value={messageTextSize} onChange={(event) => changeMessageTextSize(event.target.value)} className="mt-2 h-10 w-full rounded-xl border bg-background px-3 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/30">
+            <option value="small">{t.settings.textSizeSmall}</option>
+            <option value="normal">{t.settings.textSizeNormal}</option>
+            <option value="large">{t.settings.textSizeLarge}</option>
+          </select>
+        </section>
+
+        <section className="mt-4 rounded-2xl border bg-card p-5 shadow-sm sm:p-6" aria-labelledby="language-title">
+          <h2 id="language-title" className="font-semibold">{t.settings.languageSection}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{t.settings.languageHint}</p>
+          <label htmlFor="settings-language" className="mt-4 block text-sm font-medium">{t.language.label}</label>
+          <select id="settings-language" value={locale} onChange={(event) => setLocale(event.target.value === 'ar' ? 'ar' : 'en')} className="mt-2 h-10 w-full rounded-xl border bg-background px-3 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/30">
+            <option value="ar">العربية</option>
+            <option value="en">English</option>
+          </select>
         </section>
 
         <section className="mt-4 rounded-2xl border bg-card p-5 shadow-sm sm:p-6">

@@ -5,9 +5,11 @@ import { useRouter } from 'next/navigation'
 import { SettingsView } from '@/components/settings-view'
 import { edgeRequest, SupabaseError, type Profile } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
+import { useI18n } from '@/components/i18n-provider'
 
 export default function SettingsPage() {
   const router = useRouter()
+  const { t } = useI18n()
   const [profile, setProfile] = useState<Profile | null>(null)
   const [failed, setFailed] = useState(false)
 
@@ -30,7 +32,7 @@ export default function SettingsPage() {
   if (!profile) {
     return (
       <main className="flex min-h-dvh flex-col items-center justify-center gap-3 bg-canvas text-sm text-muted-foreground">
-        {failed ? <><p>تعذّر تحميل الإعدادات. تحقق من الإنترنت وحاول مجددًا.</p><Button onClick={() => window.location.reload()}>إعادة المحاولة</Button></> : 'جارٍ تحميل الإعدادات…'}
+        {failed ? <><p>{t.settings.loadSettingsError}</p><Button onClick={() => window.location.reload()}>{t.settings.retry}</Button></> : t.settings.loadingSettings}
       </main>
     )
   }

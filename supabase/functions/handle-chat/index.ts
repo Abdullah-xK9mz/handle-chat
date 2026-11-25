@@ -490,6 +490,21 @@ async function handle(request: Request) {
         if (!profile) throw new ChatError("UNAUTHORIZED", 401);
         return json(profile);
       }
+      case "list-own-devices": {
+        const response = await serviceRequest(
+          `/rest/v1/device_registry?select=device_id,last_seen_at,user_agent&user_id=eq.${encodeURIComponent(user.id)}&order=last_seen_at.desc&limit=100`,
+        );
+        if (!response.ok) throw new ChatError("GENERIC", 500);
+        const devices = await response.json();
+        return json({
+          devices: (devices as Array<Record<string, unknown>>).map((device) => ({
+            deviceId: device.device_id,
+            lastSeenAt: device.last_seen_at,
+            userAgent: device.user_agent,
+            isCurrent: device.device_id === deviceId,
+          })),
+        });
+      }
       case "admin-list-users": {
         await requireAdmin(user.id);
         const [response, bansResponse] = await Promise.all([
