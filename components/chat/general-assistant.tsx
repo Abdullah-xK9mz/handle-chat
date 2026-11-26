@@ -28,7 +28,7 @@ type HordeChunk = { choices?: Array<{ delta?: { content?: string | null } }> }
 
 const HORDE_CHAT_URL = 'https://oai.aihorde.net/v1/chat/completions'
 const HORDE_GUEST_KEY = '0000000000'
-const HORDE_MODEL = 'koboldcpp/G4-MeroMero-26B-A4B-it-uncensored-heretic'
+const HORDE_MODEL = 'koboldcpp/Qwen3-14B'
 const MAX_QUESTION_LENGTH = 2000
 const HISTORY_IMPORT_BATCH_SIZE = 25
 const HISTORY_IMPORT_BATCH_CHARACTERS = 250_000
@@ -108,9 +108,8 @@ async function streamHordeAnswer(
     body: JSON.stringify({
       model: HORDE_MODEL,
       messages: [{ role: 'system', content: `${GENERAL_ASSISTANT_INSTRUCTIONS}\n\nCurrent date and time: ${currentDateTime}` }, ...history],
-      max_tokens: 16384,
+      max_tokens: 1000,
       temperature: 0.4,
-      horde: { include_reasoning: false },
       stream: true,
     }),
     signal,
