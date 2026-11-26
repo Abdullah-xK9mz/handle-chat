@@ -19,53 +19,22 @@ type HordeChatMessage = { role: 'system' | 'user' | 'assistant'; content: string
 type HordeChunk = { choices?: Array<{ delta?: { content?: string | null } }> }
 
 const HORDE_CHAT_URL = 'https://oai.aihorde.net/v1/chat/completions'
-const HORDE_MODELS_URL = 'https://oai.aihorde.net/v1/models'
 const HORDE_GUEST_KEY = '0000000000'
+const HORDE_MODEL = 'koboldcpp/Llama-3.2-3B-Instruct'
 const MAX_QUESTION_LENGTH = 2000
 const GENERAL_ASSISTANT_INSTRUCTIONS = [
   'You are Message’s general text assistant. Answer general-knowledge questions, explain everyday topics, and help with simple translations in the language the user used.',
   'This assistant is text-only and for general questions. Do not write or debug code, create websites or apps, or generate images. Briefly explain that those tasks are not available here if asked.',
   'You have no web-search tool. Do not claim you searched the internet or know breaking news. If a question depends on current events or you are uncertain, say so clearly.',
+  'Keep answers concise, usually one to three short sentences.',
   'Be kind, concise, and age-appropriate. Do not ask for or repeat passwords, account credentials, or other private information.',
 ].join(' ')
-
-let preferredModelPromise: Promise<string> | null = null
-
-async function getHordeModel(signal: AbortSignal) {
-  if (!preferredModelPromise) {
-    preferredModelPromise = (async () => {
-      const response = await fetch(HORDE_MODELS_URL, {
-        headers: { Authorization: `Bearer ${HORDE_GUEST_KEY}` },
-        signal,
-      })
-      if (!response.ok) throw new Error('MODEL_LIST_UNAVAILABLE')
-      const result = (await response.json()) as { data?: Array<{ id?: unknown }> }
-      const models = (result.data ?? []).flatMap((model) =>
-        typeof model.id === 'string' ? [model.id] : [],
-      )
-      const preferred = [
-        'Qwen/Qwen3.8-Flash-Next',
-        'koboldcpp/Qwen3-14B',
-        'koboldcpp/Llama-3.2-3B-Instruct',
-        'koboldcpp/Qwen3-1.7B',
-      ]
-      const model = preferred.find((id) => models.includes(id)) ?? models.find((id) => /qwen|llama/i.test(id))
-      if (!model) throw new Error('NO_TEXT_MODELS')
-      return model
-    })().catch((error) => {
-      preferredModelPromise = null
-      throw error
-    })
-  }
-  return preferredModelPromise
-}
 
 async function streamHordeAnswer(
   history: HordeChatMessage[],
   onText: (text: string) => void,
   signal: AbortSignal,
 ) {
-  const model = await getHordeModel(signal)
   const response = await fetch(HORDE_CHAT_URL, {
     method: 'POST',
     headers: {
@@ -73,9 +42,9 @@ async function streamHordeAnswer(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model,
+      model: HORDE_MODEL,
       messages: [{ role: 'system', content: GENERAL_ASSISTANT_INSTRUCTIONS }, ...history],
-      max_tokens: 520,
+      max_tokens: 384,
       temperature: 0.6,
       stream: true,
     }),
@@ -125,22 +94,27 @@ async function streamHordeAnswer(
   return answer.trim()
 }
 
-export function GeneralAssistant({ onBack }: { onBack: () => void }) {
+export function GeneralAssistant({ onBack, userId }: { onBack: () => void; userId: string }) {
   const { t } = useI18n()
   const [messages, setMessages] = useState<AiMessage[]>([])
   const [draft, setDraft] = useState('')
   const [historyLoading, setHistoryLoading] = useState(true)
+  const [hasMoreHistory, setHasMoreHistory] = useState(false)
+  const [olderHistoryLoading, setOlderHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState(false)
   const [saveError, setSaveError] = useState(false)
   const [busy, setBusy] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const controllerRef = useRef<AbortController | null>(null)
+  const historySaveRef = useRef<Promise<void>>(Promise.resolve())
+  const preserveScrollRef = useRef(false)
 
   useEffect(() => {
     let disposed = false
-    void edgeRequest<{ messages: AiMessage[] }>({ action: 'list-general-ai-history' })
-      .then(({ messages: saved }) => {
+    void edgeRequest<{ messages: AiMessage[]; hasMore: boolean }>({ action: 'list-general-ai-history' })
+      .then(({ messages: saved, hasMore }) => {
         if (!disposed) setMessages(Array.isArray(saved) ? saved : [])
+        if (!disposed) setHasMoreHistory(Boolean(hasMore))
       })
       .catch(() => {
         if (!disposed) setHistoryError(true)
@@ -152,12 +126,51 @@ export function GeneralAssistant({ onBack }: { onBack: () => void }) {
       disposed = true
       controllerRef.current?.abort()
     }
-  }, [])
+  }, [userId])
 
   useEffect(() => {
     const container = scrollRef.current
-    if (container) container.scrollTop = container.scrollHeight
+    if (!container) return
+    if (preserveScrollRef.current) {
+      preserveScrollRef.current = false
+      return
+    }
+    container.scrollTop = container.scrollHeight
   }, [messages, busy])
+
+  async function loadOlderHistory() {
+    const beforeId = Number(messages[0]?.id)
+    if (!Number.isSafeInteger(beforeId) || beforeId <= 0 || olderHistoryLoading) return
+
+    setOlderHistoryLoading(true)
+    const previousHeight = scrollRef.current?.scrollHeight ?? 0
+    try {
+      const { messages: older, hasMore } = await edgeRequest<{ messages: AiMessage[]; hasMore: boolean }>({
+        action: 'list-general-ai-history',
+        beforeId,
+      })
+      if (older.length) {
+        preserveScrollRef.current = true
+        setMessages((current) => [...older, ...current])
+        requestAnimationFrame(() => {
+          const container = scrollRef.current
+          if (container) container.scrollTop += container.scrollHeight - previousHeight
+        })
+      }
+      setHasMoreHistory(Boolean(hasMore))
+    } catch {
+      setHistoryError(true)
+    } finally {
+      setOlderHistoryLoading(false)
+    }
+  }
+
+  function queueHistorySave(userMessage: string, assistantMessage: string) {
+    historySaveRef.current = historySaveRef.current
+      .then(() => edgeRequest({ action: 'save-general-ai-exchange', userMessage, assistantMessage }))
+      .then(() => undefined)
+      .catch(() => setSaveError(true))
+  }
 
   async function sendQuestion(event?: FormEvent) {
     event?.preventDefault()
@@ -190,11 +203,7 @@ export function GeneralAssistant({ onBack }: { onBack: () => void }) {
         controller.signal,
       )
       setMessages((current) => current.map((message) => message.id === answerId ? { ...message, body: answer, pending: false } : message))
-      try {
-        await edgeRequest({ action: 'save-general-ai-exchange', userMessage: question, assistantMessage: answer })
-      } catch {
-        setSaveError(true)
-      }
+      queueHistorySave(question, answer)
     } catch {
       if (controller.signal.aborted) {
         setMessages((current) => current.filter((message) => message.id !== answerId))
@@ -217,8 +226,10 @@ export function GeneralAssistant({ onBack }: { onBack: () => void }) {
   async function clearHistory() {
     if (busy || !messages.length || !window.confirm(t.chat.ai.clearConfirm)) return
     try {
+      await historySaveRef.current
       await edgeRequest({ action: 'clear-general-ai-history' })
       setMessages([])
+      setHasMoreHistory(false)
       setSaveError(false)
       setHistoryError(false)
     } catch {
@@ -263,6 +274,14 @@ export function GeneralAssistant({ onBack }: { onBack: () => void }) {
           </div>
         ) : (
           <div className="mx-auto flex max-w-3xl flex-col gap-3">
+            {hasMoreHistory && (
+              <div className="flex justify-center">
+                <Button type="button" variant="ghost" size="sm" onClick={() => void loadOlderHistory()} disabled={olderHistoryLoading}>
+                  {olderHistoryLoading && <LoaderCircle className="size-3.5 animate-spin" />}
+                  {t.chat.ai.loadOlder}
+                </Button>
+              </div>
+            )}
             {messages.map((message) => (
               <div key={message.id} className={cn('flex w-full', message.role === 'user' ? 'justify-end' : 'justify-start')}>
                 <div className={cn(

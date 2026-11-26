@@ -3,6 +3,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SECRET_KEY = getSecretKey();
 const USERNAME_PATTERN = /^[a-z0-9_.]{3,20}$/;
+const GENERAL_AI_HISTORY_PAGE_SIZE = 80;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -739,12 +740,20 @@ async function handle(request: Request) {
         return json(profile);
       }
       case "list-general-ai-history": {
+        const beforeId = Number(body.beforeId);
+        const beforeFilter = Number.isSafeInteger(beforeId) && beforeId > 0
+          ? `&id=lt.${beforeId}`
+          : "";
         const response = await serviceRequest(
-          `/rest/v1/general_ai_messages?select=id,role,body,created_at&user_id=eq.${encodeURIComponent(user.id)}&order=id.desc&limit=80`,
+          `/rest/v1/general_ai_messages?select=id,role,body,created_at&user_id=eq.${encodeURIComponent(user.id)}${beforeFilter}&order=id.desc&limit=${GENERAL_AI_HISTORY_PAGE_SIZE + 1}`,
         );
         if (!response.ok) throw new ChatError("GENERIC", 500);
-        const messages = await response.json();
-        return json({ messages: Array.isArray(messages) ? messages.reverse() : [] });
+        const rows = await response.json();
+        const page = Array.isArray(rows) ? rows.slice(0, GENERAL_AI_HISTORY_PAGE_SIZE) : [];
+        return json({
+          messages: page.reverse(),
+          hasMore: Array.isArray(rows) && rows.length > GENERAL_AI_HISTORY_PAGE_SIZE,
+        });
       }
       case "save-general-ai-exchange": {
         const userMessage = typeof body.userMessage === "string" ? body.userMessage.trim() : "";
@@ -761,19 +770,6 @@ async function handle(request: Request) {
           ]),
         });
         if (!insertResponse.ok) throw new ChatError("GENERIC", 500);
-
-        const boundaryResponse = await serviceRequest(
-          `/rest/v1/general_ai_messages?select=id&user_id=eq.${encodeURIComponent(user.id)}&order=id.desc&offset=80&limit=1`,
-        );
-        if (boundaryResponse.ok) {
-          const boundary = (await boundaryResponse.json()) as Array<{ id: number }>;
-          if (boundary[0]?.id) {
-            await serviceRequest(
-              `/rest/v1/general_ai_messages?user_id=eq.${encodeURIComponent(user.id)}&id=lte.${boundary[0].id}`,
-              { method: "DELETE", headers: { Prefer: "return=minimal" } },
-            );
-          }
-        }
         return json({ saved: true });
       }
       case "clear-general-ai-history": {
