@@ -176,7 +176,10 @@ export function ConversationView({
   const [savingExpiry, setSavingExpiry] = useState(false)
   const [exportingConversation, setExportingConversation] = useState(false)
   const [forwarding, setForwarding] = useState<ChatMessage | null>(null)
+  const [bulkForwardIds, setBulkForwardIds] = useState<number[]>([])
   const [forwardTargetId, setForwardTargetId] = useState<number | ''>('')
+  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<number>>(() => new Set())
+  const [scheduledMessages, setScheduledMessages] = useState<Array<{ id: string; body: string; sendAt: string; status: 'pending' | 'failed'; replyTo: number | null }>>([])
   const [actionNotice, setActionNotice] = useState<string | null>(null)
   const [reportMenuOpen, setReportMenuOpen] = useState(false)
   const [openMessageActions, setOpenMessageActions] = useState<number | null>(null)
@@ -187,6 +190,7 @@ export function ConversationView({
   const messageActionMenuRef = useRef<HTMLDivElement>(null)
   const loadingMediaRef = useRef(new Set<string>())
   const holdTimer = useRef<number | null>(null)
+  const pendingDraftReply = useRef<number | null>(null)
 
   useEffect(() => {
     const restorePage = (state: unknown) => {
@@ -207,6 +211,31 @@ export function ConversationView({
   }, [])
 
   const messages = data?.messages ?? []
+  useEffect(() => {
+    setSelectedMessageIds(new Set())
+    setReplyTo(null)
+    pendingDraftReply.current = null
+  }, [conversationId])
+  useEffect(() => {
+    const id = pendingDraftReply.current
+    if (id == null) return
+    const restored = messages.find((message) => message.id === id)
+    if (restored) {
+      setReplyTo(restored)
+      pendingDraftReply.current = null
+    }
+  }, [messages])
+  useEffect(() => {
+    let current = true
+    void edgeRequest<{ scheduled: typeof scheduledMessages }>({ action: 'list-scheduled-messages', conversationId })
+      .then((result) => { if (current) setScheduledMessages(result.scheduled) })
+      .catch(() => { if (current) setScheduledMessages([]) })
+    return () => { current = false }
+  }, [conversationId, data?.messages.length])
+  useEffect(() => {
+    const viewedPaths = new Set(messages.filter((message) => message.viewOnce && message.viewed).flatMap((message) => [message.mediaPath, message.viewedMediaPath]).filter((path): path is string => Boolean(path)))
+    if (viewedPaths.size) setMediaUrls((current) => Object.fromEntries(Object.entries(current).filter(([path]) => !viewedPaths.has(path))))
+  }, [messages])
   const lastId = messages.at(-1)?.id
   const profileName = data?.other?.name ?? fallbackName ?? t.chat.conversationFallback
   const name = !data?.other?.isGroup
@@ -434,11 +463,51 @@ export function ConversationView({
   async function forwardMessage() {
     if (!forwarding || !forwardTargetId) return
     try {
-      await edgeRequest({ action: 'forward-message', messageId: forwarding.id, targetConversationId: forwardTargetId })
+      const ids = bulkForwardIds.length ? bulkForwardIds : [forwarding.id]
+      for (const messageId of ids) await edgeRequest({ action: 'forward-message', messageId, targetConversationId: forwardTargetId })
       closeChatPage('forward-message')
       setForwardTargetId('')
+      setBulkForwardIds([])
+      setSelectedMessageIds(new Set())
       setActionNotice(t.chat.forwarded)
       onActivity()
+    } catch {
+      setSendError(t.errors.GENERIC)
+    }
+  }
+
+  async function runBulkMessageAction(action: 'delete' | 'star' | 'forward') {
+    const selected = messages.filter((message) => selectedMessageIds.has(message.id) && !message.deletedAt)
+    if (!selected.length) return
+    if (action === 'forward') {
+      setForwarding(selected[0])
+      setBulkForwardIds(selected.map((message) => message.id))
+      setForwardTargetId('')
+      pushChatPage('forward-message')
+      return
+    }
+    setSendError(null)
+    try {
+      if (action === 'star') {
+        const shouldStar = selected.some((message) => !message.starredByMe)
+        await Promise.all(selected.map((message) => edgeRequest({ action: 'star-message', messageId: message.id, starred: shouldStar })))
+      } else {
+        await Promise.all(selected.map((message) => edgeRequest({ action: 'delete-message', messageId: message.id })))
+      }
+      setSelectedMessageIds(new Set())
+      await mutate()
+      onActivity()
+    } catch (caught) {
+      const code = typeof caught === 'object' && caught && 'code' in caught ? String(caught.code) : 'GENERIC'
+      setSendError(errorMessage(t, code))
+      await mutate()
+    }
+  }
+
+  async function setWallpaper(wallpaper: string) {
+    try {
+      await edgeRequest({ action: 'set-conversation-wallpaper', conversationId, wallpaper })
+      await mutate()
     } catch {
       setSendError(t.errors.GENERIC)
     }
@@ -550,14 +619,12 @@ export function ConversationView({
   }, [profileMenuOpen])
 
   useEffect(() => {
-    for (const mediaPath of new Set(
-      messages
-        .map((message) => message.mediaPath)
-        .filter((path): path is string => Boolean(path)),
-    )) {
+    const mediaMessages = messages.filter((message) => message.mediaPath && (!message.viewOnce || message.senderId === currentUserId))
+    for (const message of mediaMessages) {
+      const mediaPath = message.mediaPath!
       const cached = mediaUrls[mediaPath]
       if (
-        (cached && cached.expiresAt > Math.floor(Date.now() / 1000) + 300) ||
+        (cached && cached.expiresAt > Math.floor(Date.now() / 1000) + 30) ||
         loadingMediaRef.current.has(mediaPath)
       ) {
         continue
@@ -567,6 +634,7 @@ export function ConversationView({
         action: 'get-media-url',
         conversationId,
         mediaPath,
+        messageId: message.id,
       })
         .then((result) => {
           setMediaUrls((current) => ({ ...current, [mediaPath]: result }))
@@ -574,16 +642,14 @@ export function ConversationView({
         .catch(() => undefined)
         .finally(() => loadingMediaRef.current.delete(mediaPath))
     }
-  }, [conversationId, mediaUrls, messages])
+  }, [conversationId, currentUserId, mediaUrls, messages])
 
   useEffect(() => {
-    const refreshAt = Math.min(
-      ...Object.values(mediaUrls).map(({ expiresAt }) => expiresAt * 1000 - 5 * 60 * 1000),
-    )
+    const refreshAt = Math.min(...Object.values(mediaUrls).map(({ expiresAt }) => expiresAt * 1000 - 30_000))
     if (!Number.isFinite(refreshAt)) return
 
     const timer = window.setTimeout(() => {
-      const refreshWindow = Math.floor(Date.now() / 1000) + 300
+      const refreshWindow = Math.floor(Date.now() / 1000) + 30
       setMediaUrls((current) => Object.fromEntries(
         Object.entries(current).filter(([, media]) => media.expiresAt > refreshWindow),
       ))
@@ -592,7 +658,7 @@ export function ConversationView({
     return () => window.clearTimeout(timer)
   }, [mediaUrls])
 
-  async function handleSend(body: string, file: File | null, replyToId?: number) {
+  async function handleSend(body: string, file: File | null, replyToId?: number, viewOnce = false) {
     setSendError(null)
     const optimistic: ChatMessage = {
       id: -Date.now(),
@@ -602,6 +668,7 @@ export function ConversationView({
       mediaType: file?.type ?? null,
       mediaName: file?.name ?? null,
       pending: true,
+      viewOnce,
       replyTo: replyToId ?? null,
       replyBody: replyTo?.body ?? null,
       replySenderName: replyTo?.senderId === currentUserId ? t.chat.youPrefix.trim() : name,
@@ -611,7 +678,7 @@ export function ConversationView({
       await mutate(
         async (current) => {
           const message = file
-            ? await sendChatMedia<ChatMessage>(conversationId, file, body, replyToId)
+            ? await sendChatMedia<ChatMessage>(conversationId, file, body, replyToId, viewOnce)
             : (
                 await chatRequest<{ message: ChatMessage }>(key, {
                   method: 'POST',
@@ -654,6 +721,47 @@ export function ConversationView({
       return false
     }
     return true
+  }
+
+  async function scheduleMessage(body: string, sendAt: string, replyToId?: number) {
+    setSendError(null)
+    try {
+      await edgeRequest({ action: 'schedule-message', conversationId, body, sendAt, replyToId: replyToId ?? null })
+      const result = await edgeRequest<{ scheduled: typeof scheduledMessages }>({ action: 'list-scheduled-messages', conversationId })
+      setScheduledMessages(result.scheduled)
+      setActionNotice(locale === 'ar' ? 'تم حفظ الرسالة المجدولة.' : 'Scheduled message saved.')
+      onActivity()
+      return true
+    } catch (caught) {
+      const code = typeof caught === 'object' && caught && 'code' in caught ? String(caught.code) : 'GENERIC'
+      setSendError(errorMessage(t, code))
+      return false
+    }
+  }
+
+  async function cancelScheduledMessage(id: string) {
+    try {
+      await edgeRequest({ action: 'cancel-scheduled-message', id })
+      setScheduledMessages((current) => current.filter((item) => item.id !== id))
+    } catch {
+      setSendError(t.errors.GENERIC)
+    }
+  }
+
+  async function openViewOnceMessage(message: ChatMessage) {
+    if (!message.mediaPath || message.viewedByMe) return
+    try {
+      const result = await edgeRequest<{ url: string; expiresAt: number }>({
+        action: 'get-media-url', conversationId, messageId: message.id, mediaPath: message.mediaPath,
+      })
+      const type = message.mediaType?.startsWith('video/') ? 'video' : 'image'
+      setMediaViewer({ url: result.url, type })
+      pushChatPage('media-viewer')
+      await mutate()
+    } catch (caught) {
+      const code = typeof caught === 'object' && caught && 'code' in caught ? String(caught.code) : 'GENERIC'
+      setSendError(code === 'NOT_FOUND' ? (locale === 'ar' ? 'تم فتح هذه الصورة أو انتهت صلاحيتها.' : 'This item has already been opened or expired.') : t.errors.GENERIC)
+    }
   }
 
   async function searchMessages(event: FormEvent<HTMLFormElement>) {
@@ -856,6 +964,7 @@ export function ConversationView({
   const groupMembers = (data?.other?.members ?? []).filter((member) => member.id !== currentUserId)
   const sharedMedia = messages.filter((message) =>
     Boolean(message.mediaPath) &&
+    !message.viewOnce &&
     (message.messageType === 'image' || message.messageType === 'video' || message.messageType === 'voice' ||
       message.mediaType?.startsWith('image/') || message.mediaType?.startsWith('video/') || message.mediaType?.startsWith('audio/')),
   )
@@ -895,6 +1004,8 @@ export function ConversationView({
                 <span className="inline-block">@{username}</span>
               </span>
             )}
+            {!isGroup && data?.other?.isOnline && <span className="block text-[11px] text-emerald-600">{locale === 'ar' ? 'متصل الآن' : 'Online'}</span>}
+            {!isGroup && !data?.other?.isOnline && data?.other?.lastSeenAt && <span className="block text-[11px] text-muted-foreground">{locale === 'ar' ? 'آخر ظهور' : 'Last seen'} · {new Date(data.other.lastSeenAt).toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' })}</span>}
           </span>
         </button>
         <div className="ms-auto flex shrink-0 items-center gap-0.5">
@@ -968,9 +1079,14 @@ export function ConversationView({
       )}
       {actionNotice && <p role="status" className="border-b bg-background px-4 py-1.5 text-center text-xs text-muted-foreground">{actionNotice}</p>}
 
+      {scheduledMessages.length > 0 && <section className="border-b bg-primary/5 px-3 py-2 md:px-5" aria-label={locale === 'ar' ? 'الرسائل المجدولة' : 'Scheduled messages'}><div className="mx-auto grid max-w-3xl gap-1.5">{scheduledMessages.map((item) => <div key={item.id} className="flex min-w-0 items-center gap-2 rounded-lg bg-background/80 px-2.5 py-1.5 text-xs"><Clock className="size-3.5 shrink-0 text-primary" /><span className="min-w-0 flex-1 truncate">{item.body}</span><time className="shrink-0 text-muted-foreground">{new Date(item.sendAt).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' })}</time><button type="button" className="shrink-0 rounded px-2 py-1 text-destructive hover:bg-destructive/10" onClick={() => void cancelScheduledMessage(item.id)}>{locale === 'ar' ? 'إلغاء' : 'Cancel'}</button></div>)}</div></section>}
+
+      {selectedMessageIds.size > 0 && <div className="flex min-h-11 items-center gap-2 border-b bg-primary/5 px-3 py-1.5 md:px-5"><span className="min-w-0 flex-1 text-xs font-medium">{selectedMessageIds.size} {locale === 'ar' ? 'رسائل محددة' : 'selected'}</span><Button type="button" size="sm" variant="outline" onClick={() => void runBulkMessageAction('star')}><Star className="me-1 size-3.5" />{locale === 'ar' ? 'تمييز' : 'Star'}</Button><Button type="button" size="sm" variant="outline" disabled={messages.some((message) => selectedMessageIds.has(message.id) && message.viewOnce)} title={locale === 'ar' ? 'لا يمكن إعادة توجيه عرض مرة واحدة.' : 'View-once media cannot be forwarded.'} onClick={() => void runBulkMessageAction('forward')}><Forward className="me-1 size-3.5" />{locale === 'ar' ? 'إعادة توجيه' : 'Forward'}</Button>{messages.filter((message) => selectedMessageIds.has(message.id)).every((message) => isAdmin || message.senderId === currentUserId) && <Button type="button" size="sm" variant="outline" className="text-destructive" onClick={() => void runBulkMessageAction('delete')}><Trash2 className="me-1 size-3.5" />{locale === 'ar' ? 'حذف' : 'Delete'}</Button>}<Button type="button" size="icon" variant="ghost" aria-label={t.chat.cancel} onClick={() => setSelectedMessageIds(new Set())}><X className="size-4" /></Button></div>}
+
       <div
         ref={messagesContainerRef}
         className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-8"
+        style={{ backgroundColor: ({ default: 'var(--background)', slate: 'color-mix(in srgb, var(--background) 91%, #64748b 9%)', blue: 'color-mix(in srgb, var(--background) 91%, #3b82f6 9%)', green: 'color-mix(in srgb, var(--background) 91%, #22c55e 9%)', rose: 'color-mix(in srgb, var(--background) 91%, #f43f5e 9%)', violet: 'color-mix(in srgb, var(--background) 91%, #8b5cf6 9%)', sand: 'color-mix(in srgb, var(--background) 91%, #c08457 9%)' } as Record<string, string>)[data?.conversation?.wallpaper ?? 'default'] ?? 'var(--background)' }}
         role="log"
         aria-live="polite"
         aria-label={t.chat.messagesWith(name)}
@@ -1062,8 +1178,19 @@ export function ConversationView({
                   >
                     <div
                       data-message-bubble
+                      onClick={(event) => {
+                        if (!selectedMessageIds.size || message.deletedAt || message.pending) return
+                        if (event.target instanceof Element && event.target.closest('button, a, audio, video, input')) return
+                        setSelectedMessageIds((current) => {
+                          const next = new Set(current)
+                          if (next.has(message.id)) next.delete(message.id)
+                          else next.add(message.id)
+                          return next
+                        })
+                      }}
                       className={cn(
                         'relative max-w-[88%] rounded-2xl px-3 py-1.5 shadow-xs md:max-w-[72%]',
+                        selectedMessageIds.has(message.id) && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
                         isMembersAddedEvent
                           ? 'max-w-[90%] rounded-full bg-background/90 px-3 py-1 text-center text-xs text-muted-foreground shadow-sm md:max-w-[80%]'
                           : mine
@@ -1102,8 +1229,9 @@ export function ConversationView({
                                   ))}
                                 </div>
                                 <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setReply(message); setOpenMessageActions(null) }}><Reply className="size-3.5" />{t.chat.reply}</button>
+                                <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setSelectedMessageIds((current) => new Set(current).add(message.id)); setOpenMessageActions(null) }}><Check className="size-3.5" />{locale === 'ar' ? 'تحديد الرسالة' : 'Select message'}</button>
                                 <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { void copyMessage(message); setOpenMessageActions(null) }}><Copy className="size-3.5" />{t.chat.copyMessage}</button>
-                                <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setForwarding(message); setOpenMessageActions(null); pushChatPage('forward-message') }}><Forward className="size-3.5" />{t.chat.forwardMessage}</button>
+                                {!message.viewOnce && <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setForwarding(message); setBulkForwardIds([]); setOpenMessageActions(null); pushChatPage('forward-message') }}><Forward className="size-3.5" />{t.chat.forwardMessage}</button>}
                                 {mine && message.messageType === 'text' && Date.now() - new Date(message.createdAt).getTime() < 15 * 60_000 && <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setEditingMessageId(message.id); setEditedBody(message.body); setOpenMessageActions(null) }}><Pencil className="size-3.5" />{t.chat.editMessage}</button>}
                                 <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { void runMessageAction('star', message); setOpenMessageActions(null) }}><Star className={cn('size-3.5', message.starredByMe && 'fill-current text-primary')} />{message.starredByMe ? t.chat.unstarMessage : t.chat.starMessage}</button>
                                 <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { void runMessageAction('pin', message); setOpenMessageActions(null) }}><Pin className="size-3.5" />{message.pinned ? t.chat.unpinMessage : t.chat.pinMessage}</button>
@@ -1123,7 +1251,11 @@ export function ConversationView({
                       {!isMembersAddedEvent && message.forwardedFrom && <p className="mb-1 flex items-center gap-1 text-[11px] italic opacity-75"><Forward className="size-3" />{t.chat.forwarded}</p>}
                       {!isMembersAddedEvent && message.mediaType && (
                         <div className="mb-1 min-w-44 overflow-hidden rounded-xl">
-                          {mediaUrl ? (
+                          {message.viewOnce && message.viewed ? (
+                            <div className="flex min-h-16 items-center gap-2 rounded-lg bg-background/70 px-3 py-3 text-xs text-muted-foreground"><Clock className="size-4 shrink-0" /><span>{locale === 'ar' ? (mine ? 'تم فتح الوسيط لمرة واحدة.' : 'تم فتح هذه الرسالة.') : (mine ? 'Your one-time media was opened.' : 'This item was opened.')}</span></div>
+                          ) : message.viewOnce && !mine ? (
+                            <button type="button" className="flex min-h-16 w-full items-center gap-2 rounded-lg bg-background/70 px-3 py-3 text-start text-xs hover:bg-background disabled:opacity-60" disabled={message.viewedByMe} onClick={() => void openViewOnceMessage(message)}><Clock className="size-4 shrink-0 text-primary" /><span>{message.viewedByMe ? (locale === 'ar' ? 'تم الفتح' : 'Opened') : (locale === 'ar' ? 'اضغط لعرضها مرة واحدة' : 'Tap to view once')}</span></button>
+                          ) : mediaUrl ? (
                             messageType === 'voice' ? (
                               <audio src={mediaUrl} controls className="max-w-full" aria-label={t.chat.recordVoice} />
                             ) : messageType === 'document' ? (
@@ -1278,7 +1410,19 @@ export function ConversationView({
         <div className="border-t bg-background px-4 py-4 text-center text-sm text-muted-foreground">{t.chat.messageRequestDeclined}</div>
       ) : (
         <MessageComposer
+          conversationId={conversationId}
           onSend={handleSend}
+          onSchedule={scheduleMessage}
+          onRestoreDraftReply={(id) => {
+            if (id == null) {
+              setReplyTo(null)
+              pendingDraftReply.current = null
+            } else {
+              const restored = messages.find((message) => message.id === id)
+              if (restored) setReplyTo(restored)
+              else pendingDraftReply.current = id
+            }
+          }}
           replyMessage={replyTo}
           onCancelReply={() => setReplyTo(null)}
           onSendStructured={async (messageType, payload) => {
@@ -1316,6 +1460,23 @@ export function ConversationView({
                 )}
               </div>
             </header>
+
+            <section className="border-b px-4 py-4" aria-label={locale === 'ar' ? 'خلفية المحادثة' : 'Chat wallpaper'}>
+              <h3 className="mb-3 text-sm font-semibold">{locale === 'ar' ? 'خلفية المحادثة' : 'Chat wallpaper'}</h3>
+              <div className="flex flex-wrap gap-2">
+                {([
+                  ['default', locale === 'ar' ? 'افتراضي' : 'Default', 'bg-background'],
+                  ['slate', locale === 'ar' ? 'رمادي' : 'Slate', 'bg-slate-500'],
+                  ['blue', locale === 'ar' ? 'أزرق' : 'Blue', 'bg-blue-500'],
+                  ['green', locale === 'ar' ? 'أخضر' : 'Green', 'bg-green-500'],
+                  ['rose', locale === 'ar' ? 'وردي' : 'Rose', 'bg-rose-500'],
+                  ['violet', locale === 'ar' ? 'بنفسجي' : 'Violet', 'bg-violet-500'],
+                  ['sand', locale === 'ar' ? 'رملي' : 'Sand', 'bg-amber-700'],
+                ] as const).map(([value, label, swatch]) => (
+                  <button key={value} type="button" aria-pressed={(data?.conversation?.wallpaper ?? 'default') === value} aria-label={label} title={label} onClick={() => void setWallpaper(value)} className={cn('size-9 rounded-full border-2 shadow-sm', swatch, (data?.conversation?.wallpaper ?? 'default') === value ? 'border-primary ring-2 ring-primary/25' : 'border-background')} />
+                ))}
+              </div>
+            </section>
 
             <div className="min-h-0 flex-1 overflow-y-auto">
               <div className="flex flex-col items-center border-b px-5 py-6 text-center">

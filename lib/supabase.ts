@@ -411,6 +411,7 @@ export async function sendChatMedia<T>(
   file: File,
   body: string,
   replyToId?: number | null,
+  viewOnce = false,
 ): Promise<T> {
   if (file.size > MAX_MEDIA_SIZE) {
     throw new SupabaseError('MEDIA_TOO_LARGE', 413)
@@ -430,6 +431,7 @@ export async function sendChatMedia<T>(
       mediaType: file.type,
       mediaName: file.name.slice(0, 255),
       replyToId: replyToId ?? null,
+      viewOnce,
     })
     return result.message
   } catch (error) {

@@ -94,6 +94,9 @@ export function SettingsView({
   const [messageTextSize, setMessageTextSize] = useState<'small' | 'normal' | 'large'>('normal')
   const [sendOnEnter, setSendOnEnter] = useState(true)
   const [notificationPreview, setNotificationPreview] = useState(true)
+  const [privacyReadReceipts, setPrivacyReadReceipts] = useState(true)
+  const [presenceVisibility, setPresenceVisibility] = useState<'everyone' | 'contacts' | 'nobody'>('contacts')
+  const [privacySaving, setPrivacySaving] = useState(false)
   const [shareUrl, setShareUrl] = useState('')
   const [copiedLink, setCopiedLink] = useState(false)
   const [scannerOpen, setScannerOpen] = useState(false)
@@ -165,6 +168,18 @@ export function SettingsView({
     if (storedSize === 'small' || storedSize === 'large') setMessageTextSize(storedSize)
     setSendOnEnter(readBooleanPreference(SEND_ON_ENTER_KEY, true))
     setNotificationPreview(readBooleanPreference(NOTIFICATION_PREVIEW_KEY, true))
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void edgeRequest<{ settings: { readReceipts: boolean; presenceVisibility: 'everyone' | 'contacts' | 'nobody' } }>({ action: 'get-privacy-settings' })
+      .then(({ settings }) => {
+        if (cancelled) return
+        setPrivacyReadReceipts(settings.readReceipts !== false)
+        setPresenceVisibility(settings.presenceVisibility ?? 'contacts')
+      })
+      .catch(() => undefined)
     return () => { cancelled = true }
   }, [])
 
@@ -313,6 +328,19 @@ export function SettingsView({
   function changeNotificationPreview(value: boolean) {
     setNotificationPreview(value)
     writeBooleanPreference(NOTIFICATION_PREVIEW_KEY, value)
+  }
+
+  async function savePrivacySettings() {
+    setPrivacySaving(true)
+    setSessionError(null)
+    try {
+      await edgeRequest({ action: 'set-privacy-settings', readReceipts: privacyReadReceipts, presenceVisibility })
+      setActionNotice(locale === 'ar' ? 'تم حفظ إعدادات الخصوصية.' : 'Privacy settings saved.')
+    } catch {
+      setSessionError(t.errors.GENERIC)
+    } finally {
+      setPrivacySaving(false)
+    }
   }
 
   function selectPhoto(selected: File | null) {
@@ -650,6 +678,19 @@ export function SettingsView({
           <div className="flex items-center gap-2"><Shield className="size-5 text-primary" aria-hidden="true" /><h2 id="privacy-title" className="font-semibold">{t.settings.privacy}</h2></div>
           <p className="mt-1 text-sm text-muted-foreground">{t.settings.privacyHint}</p>
           <p className="mt-3 rounded-xl bg-muted/60 px-3 py-2 text-xs leading-relaxed text-muted-foreground">{t.settings.statusPrivacyNote}</p>
+          <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border p-3">
+            <input type="checkbox" checked={privacyReadReceipts} onChange={(event) => setPrivacyReadReceipts(event.target.checked)} className="mt-1 size-4 accent-primary" />
+            <span className="min-w-0"><span className="block text-sm font-medium">{locale === 'ar' ? 'إرسال علامات القراءة' : 'Send read receipts'}</span><span className="mt-0.5 block text-xs text-muted-foreground">{locale === 'ar' ? 'عند الإيقاف، لن تظهر للآخرين أنك قرأت رسائلهم.' : 'When off, other people will not see that you read their messages.'}</span></span>
+          </label>
+          <label htmlFor="presence-visibility" className="mt-4 block text-sm font-medium">{locale === 'ar' ? 'آخر ظهور والاتصال' : 'Last seen and online'}</label>
+          <select id="presence-visibility" value={presenceVisibility} onChange={(event) => setPresenceVisibility(event.target.value as typeof presenceVisibility)} className="mt-2 h-10 w-full rounded-xl border bg-background px-3 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/30">
+            <option value="everyone">{locale === 'ar' ? 'الجميع' : 'Everyone'}</option>
+            <option value="contacts">{locale === 'ar' ? 'الأشخاص الذين بيني وبينهم محادثة' : 'People I have a chat with'}</option>
+            <option value="nobody">{locale === 'ar' ? 'لا أحد' : 'Nobody'}</option>
+          </select>
+          <Button type="button" disabled={privacySaving} onClick={() => void savePrivacySettings()} className="mt-4">{privacySaving ? (locale === 'ar' ? 'جارٍ الحفظ…' : 'Saving…') : (locale === 'ar' ? 'حفظ الخصوصية' : 'Save privacy')}</Button>
+          {actionNotice && <p role="status" className="mt-2 text-sm text-muted-foreground">{actionNotice}</p>}
+          {sessionError && <p role="alert" className="mt-2 text-sm text-destructive">{sessionError}</p>}
           <Button type="button" variant="outline" className="mt-4 gap-2" onClick={toggleBlockedContacts} aria-expanded={blockedOpen}>
             <UserRoundX className="size-4" />{t.settings.blockedContacts} · {blockedUsers.length}
           </Button>

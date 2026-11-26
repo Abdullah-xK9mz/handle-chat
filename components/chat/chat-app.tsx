@@ -40,6 +40,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
   useEffect(() => {
     let disposed = false
     let realtimeClient: Awaited<ReturnType<typeof createRealtimeClient>> | null = null
+    let heartbeatTimer: number | null = null
 
     void createRealtimeClient().then(async (client) => {
       if (disposed) {
@@ -48,6 +49,9 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
       }
       realtimeClient = client
       await client.realtime.setAuth()
+      heartbeatTimer = window.setInterval(() => {
+        void edgeRequest<CurrentUser>({ action: 'me' }).catch(() => undefined)
+      }, 60_000)
       client.channel(`user-updates:${currentUser.id}`, { config: { private: true } })
         .on('broadcast', { event: 'chat-updated' }, ({ payload }) => {
           const conversationId = Number(payload?.conversationId)
@@ -84,6 +88,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
 
     return () => {
       disposed = true
+      if (heartbeatTimer !== null) window.clearInterval(heartbeatTimer)
       if (realtimeClient) void realtimeClient.removeAllChannels()
     }
   }, [currentUser.id, mutate])

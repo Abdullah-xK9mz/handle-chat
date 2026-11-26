@@ -140,7 +140,7 @@ function encodeObjectPath(path: string) {
   return path.split("/").map(encodeURIComponent).join("/");
 }
 
-async function createSignedMediaUrl(path: string) {
+async function createSignedMediaUrl(path: string, expiresIn = 3600) {
   const response = await fetch(
     `${SUPABASE_URL}/storage/v1/object/sign/chat-media/${encodeObjectPath(path)}`,
     {
@@ -150,7 +150,7 @@ async function createSignedMediaUrl(path: string) {
         Authorization: `Bearer ${getServiceAuthorizationKey()}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ expiresIn: 3600 }),
+      body: JSON.stringify({ expiresIn }),
     },
   );
   if (!response.ok) throw new ChatError("GENERIC", 500);
@@ -163,7 +163,7 @@ async function createSignedMediaUrl(path: string) {
     : signed.startsWith("/storage/v1/")
       ? `${SUPABASE_URL}${signed}`
       : `${SUPABASE_URL}/storage/v1${signed.startsWith("/") ? signed : `/${signed}`}`;
-  return { url, expiresAt: Math.floor(Date.now() / 1000) + 3600 };
+  return { url, expiresAt: Math.floor(Date.now() / 1000) + expiresIn };
 }
 
 function validMessageId(value: unknown) {
@@ -911,7 +911,13 @@ async function handle(request: Request) {
             p_marked_unread: false,
           }),
         ]);
+        const [viewOnceFeatures, peerPrivacy, wallpaper] = await Promise.all([
+          rpc("chat_get_view_once_features", { p_conversation_id: conversationId, p_user_id: user.id }),
+          rpc("chat_get_peer_privacy", { p_conversation_id: conversationId, p_user_id: user.id }),
+          rpc("chat_get_conversation_wallpaper", { p_conversation_id: conversationId, p_user_id: user.id }),
+        ]);
         const messageFeatures = new Map((Array.isArray(features?.messages) ? features.messages : []).map((item: Record<string, unknown>) => [Number(item.id), item]));
+        const viewOnceMap = new Map((Array.isArray(viewOnceFeatures) ? viewOnceFeatures : []).map((item: Record<string, unknown>) => [Number(item.id), item]));
         const now = Date.now();
         detail.messages = (Array.isArray(detail.messages) ? detail.messages : [])
           .filter((message: Record<string, unknown>) => {
@@ -921,10 +927,16 @@ async function handle(request: Request) {
           })
           .map((message: Record<string, unknown>) => {
             const metadata = messageFeatures.get(Number(message.id));
+            const once = viewOnceMap.get(Number(message.id));
             const parentMetadata = messageFeatures.get(Number(message.replyTo));
             const parentExpired = typeof parentMetadata?.expiresAt === "string" && Date.parse(parentMetadata.expiresAt) <= now;
+            const viewedByMe = once?.viewedByMe === true;
             return {
               ...message,
+              viewOnce: once?.viewOnce === true,
+              viewedByMe,
+              viewed: once?.viewed === true,
+              ...(once?.viewOnce === true && once.viewed === true ? { mediaPath: null, viewedMediaPath: message.mediaPath ?? null } : {}),
               editedAt: metadata?.editedAt ?? null,
               expiresAt: metadata?.expiresAt ?? null,
               reactions: Array.isArray(metadata?.reactions) ? metadata.reactions : [],
@@ -935,7 +947,16 @@ async function handle(request: Request) {
           const pinnedMetadata = messageFeatures.get(Number(detail.pinnedMessage.id));
           if (typeof pinnedMetadata?.expiresAt === "string" && Date.parse(pinnedMetadata.expiresAt) <= now) detail.pinnedMessage = null;
         }
-        if (detail.conversation) detail.conversation.expiresInSeconds = features?.expiresInSeconds ?? null;
+        if (detail.conversation) {
+          detail.conversation.expiresInSeconds = features?.expiresInSeconds ?? null;
+          detail.conversation.wallpaper = typeof wallpaper === "string" ? wallpaper : "default";
+        }
+        if (detail.other && peerPrivacy && typeof peerPrivacy === "object") {
+          detail.other.isOnline = typeof peerPrivacy.lastSeenAt === "string" && Date.now() - Date.parse(peerPrivacy.lastSeenAt) < 120_000;
+          detail.other.lastSeenAt = peerPrivacy.lastSeenAt ?? null;
+          detail.other.readReceipts = peerPrivacy.readReceipts !== false;
+          if (peerPrivacy.readReceipts === false) detail.otherLastReadAt = null;
+        }
         if (detail.conversation?.isGroup) {
           const group = await groupContext(conversationId, user.id);
           const membersResponse = await serviceRequest(
@@ -994,7 +1015,7 @@ async function handle(request: Request) {
         if (mediaPath.length > 500 || mediaName.length > 255) {
           throw new ChatError("INVALID_MEDIA", 400);
         }
-        const message = await rpc("chat_send_media", {
+        const message = await rpc(body.viewOnce === true ? "chat_send_media_once" : "chat_send_media", {
           p_conversation_id: conversationId,
           p_user_id: user.id,
           p_body: caption,
@@ -1008,7 +1029,8 @@ async function handle(request: Request) {
       case "get-media-url": {
         const mediaPath = typeof body.mediaPath === "string" ? body.mediaPath : "";
         const isStatus = body.scope === "status";
-        const allowed = isStatus
+        let signedViewOnce: { url: string; expiresAt: number } | null = null;
+        let allowed = isStatus
           ? await rpc("chat_can_access_status_media", {
               p_status_id: body.statusId,
               p_user_id: user.id,
@@ -1019,8 +1041,86 @@ async function handle(request: Request) {
               p_user_id: user.id,
               p_media_path: mediaPath,
             });
+        let expiresIn = 3600;
+        if (!isStatus) {
+          const conversationId = validConversationId(body.conversationId);
+          const oneTimeMessageId = await rpc("chat_find_view_once_message", {
+            p_user_id: user.id,
+            p_conversation_id: conversationId,
+            p_media_path: mediaPath,
+          });
+          if (oneTimeMessageId != null) {
+            if (body.messageId == null || validMessageId(body.messageId) !== Number(oneTimeMessageId)) {
+              allowed = false;
+            } else {
+              signedViewOnce = await createSignedMediaUrl(mediaPath, 90);
+              allowed = await rpc("chat_consume_view_once", {
+                p_message_id: Number(oneTimeMessageId),
+                p_user_id: user.id,
+                p_media_path: mediaPath,
+              });
+            }
+            expiresIn = 90;
+          }
+        }
         if (!allowed) throw new ChatError("NOT_FOUND", 404);
-        return json(await createSignedMediaUrl(mediaPath));
+        return json(signedViewOnce ?? await createSignedMediaUrl(mediaPath, expiresIn));
+      }
+      case "get-message-draft": {
+        const conversationId = validConversationId(body.conversationId);
+        const draft = await rpc("chat_get_message_draft", { p_conversation_id: conversationId, p_user_id: user.id });
+        if (draft == null) throw new ChatError("NOT_FOUND", 404);
+        return json({ draft });
+      }
+      case "save-message-draft": {
+        const conversationId = validConversationId(body.conversationId);
+        const draftBody = typeof body.body === "string" ? body.body : "";
+        const replyTo = body.replyToId == null ? null : validMessageId(body.replyToId);
+        await rpc("chat_set_message_draft", { p_conversation_id: conversationId, p_user_id: user.id, p_body: draftBody, p_reply_to: replyTo });
+        return json({ ok: true });
+      }
+      case "schedule-message": {
+        const conversationId = validConversationId(body.conversationId);
+        const sendAt = typeof body.sendAt === "string" ? new Date(body.sendAt) : null;
+        if (!sendAt || !Number.isFinite(sendAt.getTime())) throw new ChatError("INVALID_SCHEDULE_TIME", 400);
+        const scheduled = await rpc("chat_schedule_message", {
+          p_user_id: user.id, p_conversation_id: conversationId,
+          p_body: typeof body.body === "string" ? body.body : "",
+          p_send_at: sendAt.toISOString(), p_reply_to: body.replyToId == null ? null : validMessageId(body.replyToId),
+        });
+        return json({ scheduled });
+      }
+      case "list-scheduled-messages": {
+        const conversationId = validConversationId(body.conversationId);
+        const scheduled = await rpc("chat_list_scheduled_messages", { p_user_id: user.id, p_conversation_id: conversationId });
+        return json({ scheduled: Array.isArray(scheduled) ? scheduled : [] });
+      }
+      case "cancel-scheduled-message": {
+        const id = typeof body.id === "string" ? body.id : "";
+        if (!/^[0-9a-f-]{36}$/i.test(id)) throw new ChatError("NOT_FOUND", 404);
+        const cancelled = await rpc("chat_cancel_scheduled_message", { p_user_id: user.id, p_id: id });
+        return json({ cancelled: cancelled === true });
+      }
+      case "get-conversation-wallpaper": {
+        const conversationId = validConversationId(body.conversationId);
+        const wallpaper = await rpc("chat_get_conversation_wallpaper", { p_user_id: user.id, p_conversation_id: conversationId });
+        if (wallpaper == null) throw new ChatError("NOT_FOUND", 404);
+        return json({ wallpaper });
+      }
+      case "set-conversation-wallpaper": {
+        const conversationId = validConversationId(body.conversationId);
+        const wallpaper = typeof body.wallpaper === "string" ? body.wallpaper : "default";
+        await rpc("chat_set_conversation_wallpaper", { p_user_id: user.id, p_conversation_id: conversationId, p_wallpaper: wallpaper });
+        return json({ wallpaper });
+      }
+      case "get-privacy-settings": {
+        const settings = await rpc("chat_get_privacy_settings", { p_user_id: user.id });
+        return json({ settings });
+      }
+      case "set-privacy-settings": {
+        const presenceVisibility = typeof body.presenceVisibility === "string" ? body.presenceVisibility : "contacts";
+        const settings = await rpc("chat_set_privacy_settings", { p_user_id: user.id, p_read_receipts: body.readReceipts !== false, p_presence_visibility: presenceVisibility });
+        return json({ settings });
       }
       case "update-profile": {
         const name = typeof body.name === "string" ? body.name : "";
@@ -1304,10 +1404,14 @@ async function handle(request: Request) {
       }
       case "forward-message": {
         const targetConversationId = validConversationId(body.targetConversationId);
+        const sourceMessageId = validMessageId(body.messageId);
+        if (await rpc("chat_is_view_once_message", { p_user_id: user.id, p_message_id: sourceMessageId })) {
+          throw new ChatError("INVALID_MEDIA", 400);
+        }
         await rpc("chat_assert_send_allowed", { p_conversation_id: targetConversationId, p_user_id: user.id });
         const message = await rpc("chat_forward_message", {
           p_user_id: user.id,
-          p_message_id: validMessageId(body.messageId),
+          p_message_id: sourceMessageId,
           p_target_conversation_id: targetConversationId,
         });
         return json({ message });

@@ -63,6 +63,10 @@ export type ChatMessage = {
   editedAt?: string | null
   expiresAt?: string | null
   reactions?: MessageReaction[]
+  viewOnce?: boolean
+  viewedByMe?: boolean
+  viewed?: boolean
+  viewedMediaPath?: string | null
 }
 
 export type GroupSettings = {
@@ -79,6 +83,9 @@ export type ConversationDetail = {
     name: string
     image: string | null
     about?: string
+    isOnline?: boolean
+    lastSeenAt?: string | null
+    readReceipts?: boolean
     isGroup?: boolean
     participantCount?: number
     members?: Array<{ id: string; name: string; username: string; image: string | null; role?: 'admin' | 'member' }>
@@ -96,6 +103,7 @@ export type ConversationDetail = {
     groupSettings?: GroupSettings
     messageRequestStatus?: 'pending' | 'accepted' | 'declined' | null
     expiresInSeconds?: number | null
+    wallpaper?: string
   }
   otherLastReadAt: string | null
   otherLastDeliveredAt?: string | null
