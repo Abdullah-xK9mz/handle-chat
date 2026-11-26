@@ -755,10 +755,52 @@ async function handle(request: Request) {
           hasMore: Array.isArray(rows) && rows.length > GENERAL_AI_HISTORY_PAGE_SIZE,
         });
       }
+      case "import-general-ai-history": {
+        const incoming = Array.isArray(body.messages) ? body.messages : null;
+        if (!incoming || incoming.length > 25) throw new ChatError("INVALID_AI_HISTORY", 400);
+        let totalCharacters = 0;
+        const rows = incoming.map((message) => {
+          const clientId = typeof message?.client_id === "string" && /^[0-9a-f-]{36}$/i.test(message.client_id)
+            ? message.client_id
+            : "";
+          const role = message?.role === "user" || message?.role === "assistant" ? message.role : null;
+          const content = typeof message?.body === "string" ? message.body : "";
+          if (!clientId || !role || !content || content.length > 1_000_000 || (role === "user" && content.length > 2_000)) {
+            throw new ChatError("INVALID_AI_HISTORY", 400);
+          }
+          totalCharacters += content.length;
+          if (totalCharacters > 1_000_000) throw new ChatError("INVALID_AI_HISTORY", 400);
+          const createdAt = typeof message.created_at === "string" && Number.isFinite(Date.parse(message.created_at))
+            ? new Date(message.created_at).toISOString()
+            : new Date().toISOString();
+          const deletedAt = typeof message.deleted_at === "string" && Number.isFinite(Date.parse(message.deleted_at))
+            ? new Date(message.deleted_at).toISOString()
+            : null;
+          return {
+            user_id: user.id,
+            client_id: clientId,
+            role,
+            body: content,
+            created_at: createdAt,
+            deleted_at: deletedAt,
+            starred: message.starred === true,
+            pinned: message.pinned === true,
+            reply_body: typeof message.reply_body === "string" ? message.reply_body.slice(0, 4_000) : null,
+          };
+        });
+        if (!rows.length) return json({ messages: [] });
+        const response = await serviceRequest("/rest/v1/general_ai_messages?on_conflict=user_id,client_id", {
+          method: "POST",
+          headers: { Prefer: "resolution=ignore-duplicates,return=representation" },
+          body: JSON.stringify(rows),
+        });
+        if (!response.ok) throw new ChatError("GENERIC", 500);
+        return json({ messages: await response.json() });
+      }
       case "save-general-ai-exchange": {
         const userMessage = typeof body.userMessage === "string" ? body.userMessage.trim() : "";
         const assistantMessage = typeof body.assistantMessage === "string" ? body.assistantMessage.trim() : "";
-        if (!userMessage || userMessage.length > 2000 || !assistantMessage || assistantMessage.length > 12000) {
+        if (!userMessage || userMessage.length > 2000 || !assistantMessage || assistantMessage.length > 1_000_000) {
           throw new ChatError("INVALID_AI_EXCHANGE", 400);
         }
         const userClientId = typeof body.userMessageId === "string" && /^[0-9a-f-]{36}$/i.test(body.userMessageId)
@@ -778,9 +820,9 @@ async function handle(request: Request) {
           if (!replyRows.length) throw new ChatError("INVALID_REPLY", 400);
           replyBody = String(replyRows[0].body ?? "").slice(0, 4000);
         }
-        const insertResponse = await serviceRequest("/rest/v1/general_ai_messages", {
+        const insertResponse = await serviceRequest("/rest/v1/general_ai_messages?on_conflict=user_id,client_id", {
           method: "POST",
-          headers: { Prefer: "return=representation" },
+          headers: { Prefer: "resolution=ignore-duplicates,return=representation" },
           body: JSON.stringify([
             { user_id: user.id, client_id: userClientId, role: "user", body: userMessage, reply_to_id: replyToId, reply_body: replyBody },
             { user_id: user.id, client_id: assistantClientId, role: "assistant", body: assistantMessage },

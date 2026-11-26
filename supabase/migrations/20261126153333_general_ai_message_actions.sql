@@ -24,5 +24,4 @@ end
 $$;
 
 create unique index if not exists general_ai_messages_user_client_id_idx
-  on public.general_ai_messages (user_id, client_id)
-  where client_id is not null;
+  on public.general_ai_messages (user_id, client_id);
