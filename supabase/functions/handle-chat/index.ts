@@ -6,7 +6,7 @@ const USERNAME_PATTERN = /^[a-z0-9_.]{3,20}$/;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-client-info, x-device-id",
+  "Access-Control-Allow-Headers": "authorization, apikey, content-type, x-client-info, x-device-id, x-message-bot-key",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Content-Type": "application/json; charset=utf-8",
 };
@@ -466,6 +466,210 @@ async function adminAuthUser(userId: string, method: "PATCH" | "DELETE", body?: 
   return method === "DELETE" ? null : response.json();
 }
 
+function randomBase64Url(byteLength: number) {
+  const bytes = crypto.getRandomValues(new Uint8Array(byteLength));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
+}
+
+async function sha256Hex(value: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function getMessageBotCredential(ownerUserId: string) {
+  const response = await serviceRequest(
+    `/rest/v1/message_bot_credentials?select=owner_user_id,bot_user_id,conversation_id,token_hash,token_hint,created_at,last_used_at,revoked_at&owner_user_id=eq.${encodeURIComponent(ownerUserId)}&limit=1`,
+  );
+  if (!response.ok) throw new ChatError("GENERIC", 500);
+  return (await response.json())?.[0] ?? null;
+}
+
+async function issueMessageBotKey(ownerUserId: string) {
+  const token = `mchat_ai_${randomBase64Url(32)}`;
+  const tokenHash = await sha256Hex(token);
+  const tokenHint = token.slice(-8);
+  const previous = await getMessageBotCredential(ownerUserId);
+
+  if (previous?.bot_user_id && previous?.conversation_id) {
+    const response = await serviceRequest(
+      `/rest/v1/message_bot_credentials?owner_user_id=eq.${encodeURIComponent(ownerUserId)}`,
+      {
+        method: "PATCH",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({
+          token_hash: tokenHash,
+          token_hint: tokenHint,
+          created_at: new Date().toISOString(),
+          last_used_at: null,
+          revoked_at: null,
+          rate_window_started_at: new Date().toISOString(),
+          request_count: 0,
+        }),
+      },
+    );
+    if (!response.ok) throw new ChatError("GENERIC", 500);
+    const profileResponse = await serviceRequest(
+      `/rest/v1/profiles?select=username,name&id=eq.${encodeURIComponent(previous.bot_user_id)}&limit=1`,
+    );
+    if (!profileResponse.ok) throw new ChatError("GENERIC", 500);
+    const botProfile = (await profileResponse.json())?.[0];
+    return { token, botUsername: botProfile?.username ?? null, conversationId: previous.conversation_id };
+  }
+
+  if (previous) {
+    if (previous.bot_user_id) await adminAuthUser(previous.bot_user_id, "DELETE").catch(() => null);
+    const reset = await serviceRequest(
+      `/rest/v1/message_bot_credentials?owner_user_id=eq.${encodeURIComponent(ownerUserId)}`,
+      {
+        method: "PATCH",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({
+          bot_user_id: null,
+          conversation_id: null,
+          token_hash: tokenHash,
+          token_hint: tokenHint,
+          created_at: new Date().toISOString(),
+          last_used_at: null,
+          revoked_at: null,
+          rate_window_started_at: new Date().toISOString(),
+          request_count: 0,
+        }),
+      },
+    );
+    if (!reset.ok) throw new ChatError("GENERIC", 500);
+  } else {
+    const reserve = await serviceRequest("/rest/v1/message_bot_credentials", {
+      method: "POST",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({ owner_user_id: ownerUserId, token_hash: tokenHash, token_hint: tokenHint }),
+    });
+    if (!reserve.ok) throw new ChatError("GENERIC", 409);
+  }
+
+  const botUsername = `message_ai_${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+  const botPassword = randomBase64Url(48);
+  let botUserId: string | null = null;
+  try {
+    const created = await serviceRequest("/auth/v1/admin/users", {
+      method: "POST",
+      body: JSON.stringify({
+        email: `${botUsername}@users.handle.local`,
+        password: botPassword,
+        email_confirm: true,
+        user_metadata: { username: botUsername, name: "Message AI" },
+      }),
+    });
+    if (!created.ok) throw new ChatError("GENERIC", 500);
+    const botUser = await created.json();
+    if (typeof botUser?.id !== "string") throw new ChatError("GENERIC", 500);
+    botUserId = botUser.id;
+    const conversationId = await rpc("chat_start_conversation", { p_user_id: ownerUserId, p_username: botUsername });
+    const finish = await serviceRequest(
+      `/rest/v1/message_bot_credentials?owner_user_id=eq.${encodeURIComponent(ownerUserId)}`,
+      {
+        method: "PATCH",
+        headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({ bot_user_id: botUserId, conversation_id: conversationId }),
+      },
+    );
+    if (!finish.ok) throw new ChatError("GENERIC", 500);
+    return { token, botUsername, conversationId };
+  } catch (error) {
+    await serviceRequest(`/rest/v1/message_bot_credentials?owner_user_id=eq.${encodeURIComponent(ownerUserId)}`, {
+      method: "PATCH",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({ revoked_at: new Date().toISOString() }),
+    }).catch(() => null);
+    if (botUserId) await adminAuthUser(botUserId, "DELETE").catch(() => null);
+    throw error;
+  }
+}
+
+async function authenticateMessageBot(request: Request) {
+  const token = (request.headers.get("x-message-bot-key") ?? "").trim();
+  if (!/^mchat_ai_[A-Za-z0-9_-]{40,64}$/.test(token)) throw new ChatError("UNAUTHORIZED", 401);
+  const tokenHash = await sha256Hex(token);
+  const response = await serviceRequest(
+    `/rest/v1/message_bot_credentials?select=owner_user_id,bot_user_id,conversation_id,revoked_at&token_hash=eq.${tokenHash}&limit=1`,
+  );
+  if (!response.ok) throw new ChatError("GENERIC", 500);
+  const credential = (await response.json())?.[0];
+  if (!credential || credential.revoked_at || !credential.bot_user_id || !credential.conversation_id) {
+    throw new ChatError("UNAUTHORIZED", 401);
+  }
+  if (!await rpc("chat_bot_allow_request", { p_credential_owner: credential.owner_user_id })) {
+    throw new ChatError("RATE_LIMITED", 429);
+  }
+  return credential as { owner_user_id: string; bot_user_id: string; conversation_id: number };
+}
+
+const IMPORT_MESSAGE_TYPES = new Set(["text", "image", "video", "voice", "document", "location", "contact", "poll", "event"]);
+
+function normalizeImportedArchive(input: unknown) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new ChatError("INVALID_ARCHIVE", 400);
+  if (JSON.stringify(input).length > 5_000_000) throw new ChatError("ARCHIVE_TOO_LARGE", 413);
+  const root = input as Record<string, unknown>;
+  const rawConversations = Array.isArray(root.conversations) ? root.conversations : [root];
+  if (rawConversations.length < 1 || rawConversations.length > 200) throw new ChatError("INVALID_ARCHIVE", 400);
+  let messageCount = 0;
+  const conversations = rawConversations.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new ChatError("INVALID_ARCHIVE", 400);
+    const conversation = entry as Record<string, unknown>;
+    if (!Array.isArray(conversation.messages) || conversation.messages.length > 20_000) throw new ChatError("INVALID_ARCHIVE", 400);
+    messageCount += conversation.messages.length;
+    if (messageCount > 20_000) throw new ChatError("INVALID_ARCHIVE", 400);
+    const name = typeof conversation.name === "string" ? conversation.name.trim().slice(0, 100) : "";
+    if (!name) throw new ChatError("INVALID_ARCHIVE", 400);
+    const messages = conversation.messages.map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new ChatError("INVALID_ARCHIVE", 400);
+      const message = entry as Record<string, unknown>;
+      const body = typeof message.body === "string" ? message.body : "";
+      if (body.length > 4000) throw new ChatError("INVALID_ARCHIVE", 400);
+      const parsedDate = typeof message.createdAt === "string" ? Date.parse(message.createdAt) : Number.NaN;
+      if (!Number.isFinite(parsedDate)) throw new ChatError("INVALID_ARCHIVE", 400);
+      const payload = message.payload && typeof message.payload === "object" && !Array.isArray(message.payload) ? message.payload : {};
+      if (JSON.stringify(payload).length > 20_000) throw new ChatError("INVALID_ARCHIVE", 400);
+      const mediaType = typeof message.mediaType === "string" && message.mediaType.length <= 100 && /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i.test(message.mediaType) ? message.mediaType : null;
+      return {
+        id: Number.isSafeInteger(Number(message.id)) && Number(message.id) > 0 ? Number(message.id) : null,
+        sender: typeof message.sender === "string" ? message.sender.trim().replace(/^@/, "").slice(0, 20) : "unknown",
+        body,
+        createdAt: new Date(parsedDate).toISOString(),
+        editedAt: typeof message.editedAt === "string" && Number.isFinite(Date.parse(message.editedAt)) ? new Date(message.editedAt).toISOString() : null,
+        messageType: typeof message.messageType === "string" && IMPORT_MESSAGE_TYPES.has(message.messageType) ? message.messageType : "text",
+        mediaType,
+        mediaName: typeof message.mediaName === "string" ? message.mediaName.slice(0, 255) : null,
+        payload,
+      };
+    });
+    const exportedAt = typeof conversation.exportedAt === "string" && Number.isFinite(Date.parse(conversation.exportedAt))
+      ? new Date(conversation.exportedAt).toISOString()
+      : new Date().toISOString();
+    return {
+      sourceConversationId: Number.isSafeInteger(Number(conversation.conversationId)) ? Number(conversation.conversationId) : null,
+      name,
+      exportedAt,
+      messages,
+    };
+  });
+  const profile = root.profile && typeof root.profile === "object" && !Array.isArray(root.profile)
+    ? root.profile as Record<string, unknown>
+    : null;
+  const archive = {
+    format: "message-chat-archive",
+    version: 1,
+    profile: profile ? {
+      username: typeof profile.username === "string" ? profile.username.slice(0, 20) : null,
+      name: typeof profile.name === "string" ? profile.name.slice(0, 50) : null,
+    } : null,
+    conversations,
+  };
+  const name = conversations.length === 1 ? conversations[0].name : (profile?.name ? `${String(profile.name).slice(0, 65)} · archive` : "Imported conversations");
+  return { archive, name, conversationCount: conversations.length, messageCount };
+}
+
 async function handle(request: Request) {
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
@@ -476,6 +680,35 @@ async function handle(request: Request) {
     const body = await request.json().catch(() => {
       throw new ChatError("GENERIC", 400);
     });
+    if (body?.action === "bot-inbox" || body?.action === "bot-send") {
+      const credential = await authenticateMessageBot(request);
+      if (await activeAccountBan(credential.owner_user_id)) throw new ChatError("ACCOUNT_BANNED", 403);
+      if (body.action === "bot-inbox") {
+        const afterId = body.afterId == null ? 0 : Number(body.afterId);
+        if (!Number.isSafeInteger(afterId) || afterId < 0) throw new ChatError("NOT_FOUND", 400);
+        const messages = await rpc("chat_bot_get_messages", {
+          p_owner_user_id: credential.owner_user_id,
+          p_bot_user_id: credential.bot_user_id,
+          p_conversation_id: credential.conversation_id,
+          p_after_id: afterId,
+        });
+        return json({ messages: Array.isArray(messages) ? messages : [] });
+      }
+      const messageBody = typeof body.body === "string" ? body.body.trim() : "";
+      if (!messageBody) throw new ChatError("EMPTY_MESSAGE", 400);
+      if (messageBody.length > 4000) throw new ChatError("MESSAGE_TOO_LONG", 400);
+      await rpc("chat_assert_send_allowed", {
+        p_conversation_id: credential.conversation_id,
+        p_user_id: credential.bot_user_id,
+      });
+      const message = await rpc("chat_send_message", {
+        p_conversation_id: credential.conversation_id,
+        p_user_id: credential.bot_user_id,
+        p_body: messageBody,
+        p_reply_to: body.replyToId == null ? null : validMessageId(body.replyToId),
+      });
+      return json({ message });
+    }
     const deviceId = requestDeviceId(request);
     if (!deviceId) throw new ChatError("DEVICE_ID_REQUIRED", 400);
     if (body?.action === "sign-up") {
@@ -849,6 +1082,100 @@ async function handle(request: Request) {
         const data = await rpc("chat_export_user_data", { p_user_id: user.id });
         if (!data?.profile) throw new ChatError("NOT_FOUND", 404);
         return json({ data });
+      }
+      case "import-chat-archive": {
+        const normalized = normalizeImportedArchive(body.archive);
+        const checksum = await sha256Hex(JSON.stringify(normalized.archive));
+        const insertion = await serviceRequest(
+          "/rest/v1/imported_chat_archives?on_conflict=user_id,checksum",
+          {
+            method: "POST",
+            headers: { Prefer: "resolution=ignore-duplicates,return=representation" },
+            body: JSON.stringify({
+              user_id: user.id,
+              checksum,
+              name: normalized.name,
+              conversation_count: normalized.conversationCount,
+              message_count: normalized.messageCount,
+              archive: normalized.archive,
+            }),
+          },
+        );
+        if (!insertion.ok) throw new ChatError("INVALID_ARCHIVE", 400);
+        let row = (await insertion.json().catch(() => []))?.[0];
+        const duplicate = !row;
+        if (duplicate) {
+          const existing = await serviceRequest(
+            `/rest/v1/imported_chat_archives?select=id,name,conversation_count,message_count,imported_at&id=not.is.null&user_id=eq.${encodeURIComponent(user.id)}&checksum=eq.${checksum}&limit=1`,
+          );
+          if (!existing.ok) throw new ChatError("GENERIC", 500);
+          row = (await existing.json())?.[0];
+        }
+        if (!row) throw new ChatError("GENERIC", 500);
+        return json({ archive: row, duplicate });
+      }
+      case "list-imported-chats": {
+        const response = await serviceRequest(
+          `/rest/v1/imported_chat_archives?select=id,name,conversation_count,message_count,imported_at&user_id=eq.${encodeURIComponent(user.id)}&order=imported_at.desc&limit=200`,
+        );
+        if (!response.ok) throw new ChatError("GENERIC", 500);
+        return json({ archives: await response.json() });
+      }
+      case "get-imported-chat": {
+        const archiveId = typeof body.id === "string" ? body.id : "";
+        if (!/^[0-9a-f-]{36}$/i.test(archiveId)) throw new ChatError("NOT_FOUND", 404);
+        const response = await serviceRequest(
+          `/rest/v1/imported_chat_archives?select=id,name,conversation_count,message_count,imported_at,archive&id=eq.${encodeURIComponent(archiveId)}&user_id=eq.${encodeURIComponent(user.id)}&limit=1`,
+        );
+        if (!response.ok) throw new ChatError("GENERIC", 500);
+        const archive = (await response.json())?.[0];
+        if (!archive) throw new ChatError("NOT_FOUND", 404);
+        return json({ archive });
+      }
+      case "delete-imported-chat": {
+        const archiveId = typeof body.id === "string" ? body.id : "";
+        if (!/^[0-9a-f-]{36}$/i.test(archiveId)) throw new ChatError("NOT_FOUND", 404);
+        const response = await serviceRequest(
+          `/rest/v1/imported_chat_archives?id=eq.${encodeURIComponent(archiveId)}&user_id=eq.${encodeURIComponent(user.id)}`,
+          { method: "DELETE" },
+        );
+        if (!response.ok) throw new ChatError("GENERIC", 500);
+        return json({ ok: true });
+      }
+      case "get-message-bot-status": {
+        const credential = await getMessageBotCredential(user.id);
+        let botUsername: string | null = null;
+        if (credential?.bot_user_id) {
+          const profileResponse = await serviceRequest(
+            `/rest/v1/profiles?select=username,name&id=eq.${encodeURIComponent(credential.bot_user_id)}&limit=1`,
+          );
+          if (!profileResponse.ok) throw new ChatError("GENERIC", 500);
+          botUsername = (await profileResponse.json())?.[0]?.username ?? null;
+        }
+        return json({
+          active: Boolean(credential && !credential.revoked_at && credential.bot_user_id && credential.conversation_id),
+          tokenHint: credential?.token_hint ?? null,
+          botUsername,
+          conversationId: credential?.conversation_id ?? null,
+          createdAt: credential?.created_at ?? null,
+          lastUsedAt: credential?.last_used_at ?? null,
+        });
+      }
+      case "issue-message-bot-key": {
+        const result = await issueMessageBotKey(user.id);
+        return json(result);
+      }
+      case "revoke-message-bot-key": {
+        const response = await serviceRequest(
+          `/rest/v1/message_bot_credentials?owner_user_id=eq.${encodeURIComponent(user.id)}`,
+          {
+            method: "PATCH",
+            headers: { Prefer: "return=minimal" },
+            body: JSON.stringify({ revoked_at: new Date().toISOString() }),
+          },
+        );
+        if (!response.ok) throw new ChatError("GENERIC", 500);
+        return json({ ok: true });
       }
       case "search-users": {
         const query =

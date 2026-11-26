@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Camera, Check, Download, Laptop, LogOut, QrCode, Save, ScanLine, Shield, Smartphone, Tablet, UserRoundX } from 'lucide-react'
+import { ArrowLeft, Bot, Camera, Check, Copy, Download, FileUp, Laptop, LogOut, QrCode, RotateCw, Save, ScanLine, Shield, Smartphone, Tablet, Trash2, UserRoundX, X } from 'lucide-react'
 import { LanguageToggle } from '@/components/language-toggle'
 import { UserAvatar } from '@/components/chat/user-avatar'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -14,6 +14,8 @@ import {
   signOutOtherSessions,
   signOut as supabaseSignOut,
   SupabaseError,
+  SUPABASE_PUBLISHABLE_KEY,
+  SUPABASE_URL,
   uploadAvatar,
   type Profile,
 } from '@/lib/supabase'
@@ -34,6 +36,45 @@ type BlockedUser = {
   name: string
   username: string
   image: string | null
+}
+
+type ImportedArchiveSummary = {
+  id: string
+  name: string
+  conversation_count: number
+  message_count: number
+  imported_at: string
+}
+
+type ImportedArchiveMessage = {
+  id: number | null
+  sender: string
+  body: string
+  createdAt: string
+  editedAt: string | null
+  messageType: string
+  mediaType: string | null
+  mediaName: string | null
+  payload: Record<string, unknown>
+}
+
+type ImportedArchiveConversation = {
+  name: string
+  exportedAt: string
+  messages: ImportedArchiveMessage[]
+}
+
+type ImportedArchiveDetail = ImportedArchiveSummary & {
+  archive: { profile: { username: string | null; name: string | null } | null; conversations: ImportedArchiveConversation[] }
+}
+
+type MessageBotStatus = {
+  active: boolean
+  tokenHint: string | null
+  botUsername: string | null
+  conversationId: number | null
+  createdAt: string | null
+  lastUsedAt: string | null
 }
 
 function describeDevice(userAgent: string | null) {
@@ -87,6 +128,20 @@ export function SettingsView({
   const [sessionError, setSessionError] = useState<string | null>(null)
   const [actionNotice, setActionNotice] = useState<string | null>(null)
   const [exportingData, setExportingData] = useState(false)
+  const [archives, setArchives] = useState<ImportedArchiveSummary[]>([])
+  const [archivesLoading, setArchivesLoading] = useState(true)
+  const [importingArchive, setImportingArchive] = useState(false)
+  const [archiveError, setArchiveError] = useState<string | null>(null)
+  const [archiveNotice, setArchiveNotice] = useState<string | null>(null)
+  const [openArchive, setOpenArchive] = useState<ImportedArchiveDetail | null>(null)
+  const [openArchiveConversation, setOpenArchiveConversation] = useState(0)
+  const [botStatus, setBotStatus] = useState<MessageBotStatus | null>(null)
+  const [botLoading, setBotLoading] = useState(true)
+  const [botBusy, setBotBusy] = useState(false)
+  const [botKey, setBotKey] = useState<string | null>(null)
+  const [botError, setBotError] = useState<string | null>(null)
+  const [botNotice, setBotNotice] = useState<string | null>(null)
+  const [copiedBotInstructions, setCopiedBotInstructions] = useState(false)
   const [blockedUsers, setBlockedUsers] = useState<BlockedUser[]>([])
   const [blockedOpen, setBlockedOpen] = useState(false)
   const [blockedLoading, setBlockedLoading] = useState(false)
@@ -108,6 +163,7 @@ export function SettingsView({
   const scannerRunning = useRef(false)
   const scannerGenerationRef = useRef(0)
   const photoRef = useRef<HTMLInputElement>(null)
+  const archiveFileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     setNotificationsEnabled(localStorage.getItem('handle.notifications.enabled.v1') === 'true')
@@ -170,6 +226,19 @@ export function SettingsView({
     setNotificationPreview(readBooleanPreference(NOTIFICATION_PREVIEW_KEY, true))
     return () => { cancelled = true }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    edgeRequest<{ archives: ImportedArchiveSummary[] }>({ action: 'list-imported-chats' })
+      .then((result) => { if (!cancelled) setArchives(result.archives) })
+      .catch(() => { if (!cancelled) setArchiveError(locale === 'ar' ? 'تعذر تحميل الأرشيف.' : 'Could not load your archives.') })
+      .finally(() => { if (!cancelled) setArchivesLoading(false) })
+    edgeRequest<MessageBotStatus>({ action: 'get-message-bot-status' })
+      .then((result) => { if (!cancelled) setBotStatus(result) })
+      .catch(() => { if (!cancelled) setBotError(locale === 'ar' ? 'تعذر تحميل إعدادات البوت.' : 'Could not load bot settings.') })
+      .finally(() => { if (!cancelled) setBotLoading(false) })
+    return () => { cancelled = true }
+  }, [locale])
 
   useEffect(() => {
     let cancelled = false
@@ -433,6 +502,136 @@ export function SettingsView({
       setSessionError(t.errors.GENERIC)
     } finally {
       setExportingData(false)
+    }
+  }
+
+  async function refreshImportedArchives() {
+    const result = await edgeRequest<{ archives: ImportedArchiveSummary[] }>({ action: 'list-imported-chats' })
+    setArchives(result.archives)
+  }
+
+  async function importArchiveFile(file: File | null) {
+    if (!file || importingArchive) return
+    setImportingArchive(true)
+    setArchiveError(null)
+    setArchiveNotice(null)
+    try {
+      if (file.size > 5_000_000) throw new Error('ARCHIVE_TOO_LARGE')
+      const archive = JSON.parse(await file.text()) as unknown
+      const result = await edgeRequest<{ archive: ImportedArchiveSummary; duplicate: boolean }>({ action: 'import-chat-archive', archive })
+      await refreshImportedArchives()
+      setArchiveNotice(result.duplicate
+        ? (locale === 'ar' ? 'هذه النسخة موجودة بالفعل في أرشيفك.' : 'That export is already in your archive.')
+        : (locale === 'ar' ? `تم استيراد ${result.archive.conversation_count} محادثة إلى الأرشيف.` : `Imported ${result.archive.conversation_count} conversation(s) into your archive.`))
+    } catch {
+      setArchiveError(locale === 'ar'
+        ? 'تعذر استيراد الملف. اختر ملف JSON صادرًا من الموقع وأقل من 5 ميجابايت.'
+        : 'Could not import this file. Choose a JSON export from this site under 5 MB.')
+    } finally {
+      setImportingArchive(false)
+    }
+  }
+
+  async function openArchiveDetails(archiveId: string) {
+    if (openArchive?.id === archiveId) {
+      setOpenArchive(null)
+      return
+    }
+    setArchiveError(null)
+    try {
+      const result = await edgeRequest<{ archive: ImportedArchiveDetail }>({ action: 'get-imported-chat', id: archiveId })
+      setOpenArchive(result.archive)
+      setOpenArchiveConversation(0)
+    } catch {
+      setArchiveError(locale === 'ar' ? 'تعذر فتح الأرشيف.' : 'Could not open this archive.')
+    }
+  }
+
+  async function deleteImportedArchive(archive: ImportedArchiveSummary) {
+    const confirmed = window.confirm(locale === 'ar' ? `حذف أرشيف «${archive.name}»؟` : `Delete the “${archive.name}” archive?`)
+    if (!confirmed) return
+    try {
+      await edgeRequest({ action: 'delete-imported-chat', id: archive.id })
+      setArchives((current) => current.filter((item) => item.id !== archive.id))
+      if (openArchive?.id === archive.id) setOpenArchive(null)
+      setArchiveError(null)
+    } catch {
+      setArchiveError(locale === 'ar' ? 'تعذر حذف الأرشيف.' : 'Could not delete this archive.')
+    }
+  }
+
+  async function refreshMessageBotStatus() {
+    const result = await edgeRequest<MessageBotStatus>({ action: 'get-message-bot-status' })
+    setBotStatus(result)
+  }
+
+  async function issueMessageBotKey() {
+    if (botBusy) return
+    if (botStatus?.active && !window.confirm(locale === 'ar'
+      ? 'إنشاء مفتاح جديد سيوقف المفتاح القديم. هل تريد المتابعة؟'
+      : 'Creating a new key will disable the old key. Continue?')) return
+    setBotBusy(true)
+    setBotError(null)
+    setBotNotice(null)
+    try {
+      const result = await edgeRequest<{ token: string; botUsername: string; conversationId: number }>({ action: 'issue-message-bot-key' })
+      setBotKey(result.token)
+      await refreshMessageBotStatus()
+      setBotNotice(locale === 'ar' ? 'تم إنشاء المفتاح. انسخه الآن؛ لن يظهر مرة أخرى.' : 'Key created. Copy it now; it will not be shown again.')
+    } catch {
+      setBotError(locale === 'ar' ? 'تعذر إنشاء مفتاح البوت.' : 'Could not create the bot key.')
+    } finally {
+      setBotBusy(false)
+    }
+  }
+
+  async function revokeMessageBotKey() {
+    if (!botStatus?.active || botBusy) return
+    if (!window.confirm(locale === 'ar' ? 'إيقاف مفتاح البوت؟ لن يستطيع الاتصال بعد ذلك.' : 'Revoke the bot key? It will stop working immediately.')) return
+    setBotBusy(true)
+    setBotError(null)
+    try {
+      await edgeRequest({ action: 'revoke-message-bot-key' })
+      setBotKey(null)
+      await refreshMessageBotStatus()
+      setBotNotice(locale === 'ar' ? 'تم إيقاف المفتاح.' : 'The key has been revoked.')
+    } catch {
+      setBotError(locale === 'ar' ? 'تعذر إيقاف المفتاح.' : 'Could not revoke the key.')
+    } finally {
+      setBotBusy(false)
+    }
+  }
+
+  function messageBotInstructions() {
+    if (!botKey) return ''
+    return `${locale === 'ar' ? 'أنت مساعد داخل محادثة خاصة في تطبيق Message. استخدم طلبات HTTPS التالية لقراءة الرسائل الجديدة والرد عليها. لا تدّعِ أنك أرسلت رسالة إذا فشل الطلب، ولا تكرر الرد على الرسالة نفسها.' : 'You are an assistant in a private Message app chat. Use the HTTPS requests below to read new messages and reply. Do not claim a message was sent if the request fails, and do not reply twice to the same message.'}
+
+Endpoint: ${SUPABASE_URL}/functions/v1/handle-chat
+Method: POST
+Headers:
+  Content-Type: application/json
+  apikey: ${SUPABASE_PUBLISHABLE_KEY}
+  x-message-bot-key: ${botKey}
+
+Read recent messages:
+{"action":"bot-inbox","afterId":0}
+
+Read new messages after the highest message id already seen:
+{"action":"bot-inbox","afterId":123}
+
+Send a reply:
+{"action":"bot-send","body":"Your reply here"}
+
+Replies from you have from="you"; your earlier assistant messages have from="ai". Only answer new messages from you. Poll no more than once every 3 seconds. This key only accesses the dedicated Message AI chat; keep it private and revoke it from Settings if it is shared by mistake.`
+  }
+
+  async function copyMessageBotInstructions() {
+    try {
+      await navigator.clipboard.writeText(messageBotInstructions())
+      setCopiedBotInstructions(true)
+      setBotNotice(locale === 'ar' ? 'تم نسخ التعليمات والمفتاح. شاركها فقط مع أداة ذكاء اصطناعي تثق بها.' : 'Instructions and key copied. Share them only with an AI tool you trust.')
+    } catch {
+      setBotError(locale === 'ar' ? 'تعذر النسخ. انسخ النص يدويًا.' : 'Could not copy. Select and copy the text manually.')
     }
   }
 
@@ -789,6 +988,69 @@ export function SettingsView({
               <span className="mt-0.5 block text-xs text-muted-foreground">{t.settings.notificationPreviewHint}</span>
             </span>
           </label>
+        </section>
+
+        <section className="mt-4 rounded-2xl border bg-card p-5 shadow-sm sm:p-6" aria-labelledby="chat-archives-title">
+          <div className="flex items-center gap-2"><FileUp className="size-5 text-primary" aria-hidden="true" /><h2 id="chat-archives-title" className="font-semibold">{locale === 'ar' ? 'استيراد المحادثات' : 'Import conversations'}</h2></div>
+          <p className="mt-1 text-sm text-muted-foreground">{locale === 'ar' ? 'ارفع ملف JSON الذي نزّلته من تصدير الموقع. ستظهر المحادثات كأرشيف خاص للقراءة، ولن تُضاف رسائل قديمة إلى محادثات الأشخاص.' : 'Upload a JSON file exported from this site. Conversations are kept as a private, read-only archive; old messages will not be inserted into people’s live chats.'}</p>
+          <p className="mt-2 text-xs text-muted-foreground">{locale === 'ar' ? 'ملفات الصور والفيديو نفسها غير موجودة داخل ملف التصدير الحالي، لذلك سيظهر اسم الملف ومعلوماته فقط. الحد الأقصى 5 ميجابايت.' : 'The current export does not contain image or video files, so only their names and details can be shown. Maximum file size: 5 MB.'}</p>
+          <input ref={archiveFileRef} type="file" accept=".json,application/json" className="sr-only" tabIndex={-1} aria-label={locale === 'ar' ? 'اختر ملف محادثات' : 'Choose conversation export'} onChange={(event) => { const file = event.target.files?.[0] ?? null; event.target.value = ''; void importArchiveFile(file) }} />
+          <Button type="button" variant="outline" className="mt-4 gap-2" disabled={importingArchive} onClick={() => archiveFileRef.current?.click()}><FileUp className="size-4" />{importingArchive ? (locale === 'ar' ? 'جارٍ الاستيراد…' : 'Importing…') : (locale === 'ar' ? 'اختيار ملف التصدير' : 'Choose export file')}</Button>
+          {archiveNotice && <p role="status" className="mt-3 text-sm text-muted-foreground">{archiveNotice}</p>}
+          {archiveError && <div role="alert" className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm text-destructive"><span>{archiveError}</span><Button type="button" size="sm" variant="outline" onClick={() => { setArchiveError(null); setArchivesLoading(true); void refreshImportedArchives().catch(() => setArchiveError(locale === 'ar' ? 'تعذر تحميل الأرشيف.' : 'Could not load your archives.')).finally(() => setArchivesLoading(false)) }}>{t.settings.retry}</Button></div>}
+          <div className="mt-4 space-y-2">
+            {archivesLoading ? <p className="text-sm text-muted-foreground">{t.settings.loadingSettings}</p>
+              : archives.length === 0 ? <p className="text-sm text-muted-foreground">{locale === 'ar' ? 'لا توجد نسخ مستوردة حتى الآن.' : 'No imported archives yet.'}</p>
+                : archives.map((archive) => (
+                  <article key={archive.id} className="rounded-xl border p-3">
+                    <div className="flex min-w-0 items-start gap-3">
+                      <div className="min-w-0 flex-1"><p className="break-words text-sm font-medium">{archive.name}</p><p className="mt-1 text-xs text-muted-foreground">{archive.conversation_count} {locale === 'ar' ? 'محادثة' : 'conversations'} · {archive.message_count} {locale === 'ar' ? 'رسالة' : 'messages'} · {new Date(archive.imported_at).toLocaleDateString(locale)}</p></div>
+                      <Button type="button" size="sm" variant="outline" onClick={() => void openArchiveDetails(archive.id)}>{openArchive?.id === archive.id ? (locale === 'ar' ? 'إغلاق' : 'Close') : (locale === 'ar' ? 'عرض' : 'View')}</Button>
+                      <Button type="button" size="icon" variant="ghost" aria-label={locale === 'ar' ? 'حذف الأرشيف' : 'Delete archive'} onClick={() => void deleteImportedArchive(archive)}><Trash2 className="size-4" /></Button>
+                    </div>
+                    {openArchive?.id === archive.id && (() => {
+                      const conversation = openArchive.archive.conversations[openArchiveConversation]
+                      if (!conversation) return <p className="mt-3 text-sm text-muted-foreground">{locale === 'ar' ? 'الأرشيف لا يحتوي على محادثات.' : 'This archive contains no conversations.'}</p>
+                      const shownMessages = conversation.messages.slice(-300)
+                      return <div className="mt-3 border-t pt-3">
+                        {openArchive.archive.conversations.length > 1 && <label className="block text-xs font-medium">{locale === 'ar' ? 'المحادثة' : 'Conversation'}<select value={openArchiveConversation} onChange={(event) => setOpenArchiveConversation(Number(event.target.value))} className="mt-1 h-10 w-full rounded-xl border bg-background px-3 text-sm">{openArchive.archive.conversations.map((item, index) => <option key={`${item.name}-${index}`} value={index}>{item.name}</option>)}</select></label>}
+                        <p className="mt-2 text-xs text-muted-foreground">{conversation.name} · {conversation.messages.length} {locale === 'ar' ? 'رسالة' : 'messages'}{conversation.messages.length > shownMessages.length ? (locale === 'ar' ? ' · المعروض آخر 300 رسالة' : ' · showing the latest 300') : ''}</p>
+                        <div className="mt-2 max-h-80 space-y-2 overflow-y-auto rounded-xl bg-muted/40 p-2">
+                          {shownMessages.map((message, index) => <div key={message.id ?? `${message.createdAt}-${index}`} className="rounded-lg border bg-card p-2.5">
+                            <div className="flex flex-wrap justify-between gap-x-3 gap-y-1 text-[11px] text-muted-foreground"><span dir="ltr">@{message.sender}</span><time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleString(locale)}</time></div>
+                            {message.body && <p className="mt-1 whitespace-pre-wrap break-words text-sm">{message.body}</p>}
+                            {!message.body && message.mediaName && <p className="mt-1 break-words text-sm">📎 {message.mediaName}</p>}
+                            {!message.body && !message.mediaName && message.messageType !== 'text' && <p className="mt-1 text-sm text-muted-foreground">{message.messageType}</p>}
+                          </div>)}
+                        </div>
+                      </div>
+                    })()}
+                  </article>
+                ))}
+          </div>
+        </section>
+
+        <section className="mt-4 rounded-2xl border bg-card p-5 shadow-sm sm:p-6" aria-labelledby="message-bot-title">
+          <div className="flex items-center gap-2"><Bot className="size-5 text-primary" aria-hidden="true" /><h2 id="message-bot-title" className="font-semibold">{locale === 'ar' ? 'محادثة مع مساعد ذكاء اصطناعي' : 'AI chat connection'}</h2></div>
+          <p className="mt-1 text-sm text-muted-foreground">{locale === 'ar' ? 'هذا يجهز حساب Message منفصلًا ومحادثة خاصة. الموقع لا يشغّل نموذج ذكاء اصطناعي بنفسه؛ أعطِ التعليمات والمفتاح لأداة ذكاء اصطناعي تستطيع إرسال طلبات HTTPS.' : 'This creates a separate Message account and private chat. The site does not run an AI model itself; give the instructions and key to an AI tool that can make HTTPS requests.'}</p>
+          <p className="mt-2 rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-muted-foreground">{locale === 'ar' ? 'المفتاح سرّ مثل كلمة المرور: لا تشاركه إلا مع أداة تثق بها. يتيح قراءة الرسائل النصية والرد في محادثة المساعد فقط، وليس بقية حسابك. يمكنك إيقافه من هنا.' : 'Treat the key like a password: share it only with a tool you trust. It can read and reply to text messages in this assistant chat only, not the rest of your account. You can revoke it here.'}</p>
+          {botLoading ? <p className="mt-3 text-sm text-muted-foreground">{t.settings.loadingSettings}</p> : botStatus?.active ? <div className="mt-3 rounded-xl border p-3">
+            <p className="text-sm font-medium">{locale === 'ar' ? 'حساب المساعد جاهز' : 'Assistant account is ready'}</p>
+            <p className="mt-1 text-sm" dir="ltr">@{botStatus.botUsername}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{locale === 'ar' ? `المفتاح الحالي ينتهي بـ ${botStatus.tokenHint ?? '••••••••'}.` : `Current key ends in ${botStatus.tokenHint ?? '••••••••'}.`}{botStatus.lastUsedAt ? ` ${locale === 'ar' ? 'آخر اتصال:' : 'Last used:'} ${new Date(botStatus.lastUsedAt).toLocaleString(locale)}` : ''}</p>
+            <Button type="button" size="sm" variant="outline" className="mt-3" onClick={() => router.push(`/?chat=${encodeURIComponent(botStatus.botUsername ?? '')}`)}>{locale === 'ar' ? 'فتح محادثة المساعد' : 'Open assistant chat'}</Button>
+          </div> : <p className="mt-3 text-sm text-muted-foreground">{locale === 'ar' ? 'لم يتم إنشاء حساب المساعد بعد.' : 'The assistant account has not been created yet.'}</p>}
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Button type="button" className="gap-2" variant="outline" disabled={botBusy || botLoading} onClick={() => void issueMessageBotKey()}><RotateCw className="size-4" />{botBusy ? (locale === 'ar' ? 'جارٍ التجهيز…' : 'Setting up…') : botStatus?.active ? (locale === 'ar' ? 'تغيير مفتاح الوصول' : 'Rotate access key') : (locale === 'ar' ? 'إنشاء الحساب والمفتاح' : 'Create account and key')}</Button>
+            {botStatus?.active && <Button type="button" variant="destructive" disabled={botBusy} onClick={() => void revokeMessageBotKey()}><X className="me-1 size-4" />{locale === 'ar' ? 'إيقاف الوصول' : 'Revoke access'}</Button>}
+          </div>
+          {botKey && <div className="mt-4 space-y-2">
+            <label htmlFor="message-bot-instructions" className="block text-sm font-medium">{locale === 'ar' ? 'التعليمات والمفتاح — انسخهما الآن' : 'Instructions and key — copy them now'}</label>
+            <textarea id="message-bot-instructions" readOnly value={messageBotInstructions()} rows={14} dir="ltr" className="w-full resize-y rounded-xl border bg-muted/40 p-3 font-mono text-xs leading-relaxed" onFocus={(event) => event.currentTarget.select()} />
+            <Button type="button" variant="outline" className="gap-2" onClick={() => void copyMessageBotInstructions()}><Copy className="size-4" />{copiedBotInstructions ? (locale === 'ar' ? 'تم النسخ' : 'Copied') : (locale === 'ar' ? 'نسخ التعليمات والمفتاح' : 'Copy instructions and key')}</Button>
+          </div>}
+          {botNotice && <p role="status" className="mt-3 text-sm text-muted-foreground">{botNotice}</p>}
+          {botError && <p role="alert" className="mt-3 text-sm text-destructive">{botError}</p>}
         </section>
 
         <section className="mt-4 rounded-2xl border bg-card p-5 shadow-sm sm:p-6">
