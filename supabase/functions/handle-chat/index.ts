@@ -745,7 +745,7 @@ async function handle(request: Request) {
           ? `&id=lt.${beforeId}`
           : "";
         const response = await serviceRequest(
-          `/rest/v1/general_ai_messages?select=id,role,body,created_at&user_id=eq.${encodeURIComponent(user.id)}${beforeFilter}&order=id.desc&limit=${GENERAL_AI_HISTORY_PAGE_SIZE + 1}`,
+          `/rest/v1/general_ai_messages?select=id,client_id,role,body,created_at,deleted_at,starred,pinned,reply_to_id,reply_body&user_id=eq.${encodeURIComponent(user.id)}${beforeFilter}&order=id.desc&limit=${GENERAL_AI_HISTORY_PAGE_SIZE + 1}`,
         );
         if (!response.ok) throw new ChatError("GENERIC", 500);
         const rows = await response.json();
@@ -761,16 +761,63 @@ async function handle(request: Request) {
         if (!userMessage || userMessage.length > 2000 || !assistantMessage || assistantMessage.length > 12000) {
           throw new ChatError("INVALID_AI_EXCHANGE", 400);
         }
+        const userClientId = typeof body.userMessageId === "string" && /^[0-9a-f-]{36}$/i.test(body.userMessageId)
+          ? body.userMessageId
+          : crypto.randomUUID();
+        const assistantClientId = typeof body.assistantMessageId === "string" && /^[0-9a-f-]{36}$/i.test(body.assistantMessageId)
+          ? body.assistantMessageId
+          : crypto.randomUUID();
+        const replyToId = body.replyToId == null ? null : validMessageId(body.replyToId);
+        let replyBody: string | null = null;
+        if (replyToId !== null) {
+          const replyResponse = await serviceRequest(
+            `/rest/v1/general_ai_messages?select=id,body,deleted_at&user_id=eq.${encodeURIComponent(user.id)}&id=eq.${replyToId}&limit=1`,
+          );
+          if (!replyResponse.ok) throw new ChatError("GENERIC", 500);
+          const replyRows = await replyResponse.json();
+          if (!replyRows.length) throw new ChatError("INVALID_REPLY", 400);
+          replyBody = String(replyRows[0].body ?? "").slice(0, 4000);
+        }
         const insertResponse = await serviceRequest("/rest/v1/general_ai_messages", {
           method: "POST",
-          headers: { Prefer: "return=minimal" },
+          headers: { Prefer: "return=representation" },
           body: JSON.stringify([
-            { user_id: user.id, role: "user", body: userMessage },
-            { user_id: user.id, role: "assistant", body: assistantMessage },
+            { user_id: user.id, client_id: userClientId, role: "user", body: userMessage, reply_to_id: replyToId, reply_body: replyBody },
+            { user_id: user.id, client_id: assistantClientId, role: "assistant", body: assistantMessage },
           ]),
         });
         if (!insertResponse.ok) throw new ChatError("GENERIC", 500);
-        return json({ saved: true });
+        return json({ saved: true, messages: await insertResponse.json() });
+      }
+      case "set-general-ai-message-flags": {
+        const messageId = validMessageId(body.messageId);
+        const update: Record<string, boolean> = {};
+        if (typeof body.starred === "boolean") update.starred = body.starred;
+        if (typeof body.pinned === "boolean") update.pinned = body.pinned;
+        if (!Object.keys(update).length) throw new ChatError("INVALID_MESSAGE", 400);
+        const response = await serviceRequest(
+          `/rest/v1/general_ai_messages?user_id=eq.${encodeURIComponent(user.id)}&id=eq.${messageId}&deleted_at=is.null`,
+          { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(update) },
+        );
+        if (!response.ok) throw new ChatError("GENERIC", 500);
+        const rows = await response.json();
+        if (!rows.length) throw new ChatError("NOT_FOUND", 404);
+        return json({ message: rows[0] });
+      }
+      case "delete-general-ai-message": {
+        const messageId = validMessageId(body.messageId);
+        const response = await serviceRequest(
+          `/rest/v1/general_ai_messages?user_id=eq.${encodeURIComponent(user.id)}&id=eq.${messageId}&deleted_at=is.null`,
+          {
+            method: "PATCH",
+            headers: { Prefer: "return=representation" },
+            body: JSON.stringify({ deleted_at: new Date().toISOString(), starred: false, pinned: false }),
+          },
+        );
+        if (!response.ok) throw new ChatError("GENERIC", 500);
+        const rows = await response.json();
+        if (!rows.length) throw new ChatError("NOT_FOUND", 404);
+        return json({ ok: true, message: rows[0] });
       }
       case "clear-general-ai-history": {
         const response = await serviceRequest(

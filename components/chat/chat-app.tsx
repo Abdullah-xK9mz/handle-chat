@@ -337,7 +337,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
               availableConversations={conversations}
             />
           ) : section === 'assistant' ? (
-            <GeneralAssistant key={profile.id} userId={profile.id} onBack={() => changeSection('chats')} />
+            <GeneralAssistant key={profile.id} userId={profile.id} availableConversations={conversations} onBack={() => changeSection('chats')} />
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
               <div className="flex size-16 items-center justify-center rounded-3xl bg-secondary text-primary">
