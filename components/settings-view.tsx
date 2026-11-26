@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Camera, Check, Laptop, LogOut, QrCode, Save, ScanLine, Shield, Smartphone, Tablet, UserRoundX } from 'lucide-react'
+import { ArrowLeft, Camera, Check, Download, Laptop, LogOut, QrCode, Save, ScanLine, Shield, Smartphone, Tablet, UserRoundX } from 'lucide-react'
 import { LanguageToggle } from '@/components/language-toggle'
 import { UserAvatar } from '@/components/chat/user-avatar'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -86,6 +86,7 @@ export function SettingsView({
   const [endingOtherSessions, setEndingOtherSessions] = useState(false)
   const [sessionError, setSessionError] = useState<string | null>(null)
   const [actionNotice, setActionNotice] = useState<string | null>(null)
+  const [exportingData, setExportingData] = useState(false)
   const [blockedUsers, setBlockedUsers] = useState<BlockedUser[]>([])
   const [blockedOpen, setBlockedOpen] = useState(false)
   const [blockedLoading, setBlockedLoading] = useState(false)
@@ -383,6 +384,27 @@ export function SettingsView({
       setError(t.errors.GENERIC)
     } finally {
       setPending(false)
+    }
+  }
+
+  async function exportMyData() {
+    if (exportingData) return
+    setExportingData(true)
+    setSessionError(null)
+    try {
+      const result = await edgeRequest<{ data: unknown }>({ action: 'export-user-data' })
+      const blob = new Blob([JSON.stringify(result.data, null, 2)], { type: 'application/json;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `message-data-${new Date().toISOString().slice(0, 10)}.json`
+      link.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setActionNotice(t.chat.exportReady)
+    } catch {
+      setSessionError(t.errors.GENERIC)
+    } finally {
+      setExportingData(false)
     }
   }
 
@@ -733,12 +755,15 @@ export function SettingsView({
           <p className="mt-1 text-sm text-muted-foreground">
             {t.settings.accountHint}
           </p>
+          <Button type="button" variant="outline" disabled={exportingData} onClick={() => void exportMyData()} className="mt-4 gap-2">
+            <Download aria-hidden="true" />{exportingData ? t.settings.exportingData : t.settings.exportData}
+          </Button>
           <Button
             type="button"
             variant="destructive"
             disabled={pending}
             onClick={signOut}
-            className="mt-4 gap-2"
+            className="ms-2 mt-4 gap-2"
           >
             <LogOut aria-hidden="true" />
             {t.chat.signOut}

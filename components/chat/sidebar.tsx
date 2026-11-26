@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { BellOff, CircleDashed, MessageSquareText, MoreHorizontal, Settings, Shield, Trash2, Users } from 'lucide-react'
+import { Archive, ArchiveRestore, BellOff, CircleDashed, Mail, MailOpen, MessageSquareText, MoreHorizontal, Pin, PinOff, Settings, Shield, Star, Trash2, Users } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/components/i18n-provider'
 import { LanguageToggle } from '@/components/language-toggle'
@@ -17,6 +17,7 @@ import { UserAvatar } from './user-avatar'
 import { StatusStrip } from './status-strip'
 
 export type SidebarSection = 'chats' | 'groups' | 'statuses'
+type ConversationFilter = 'all' | 'unread' | 'starred' | 'archived'
 
 type SidebarProps = {
   currentUser: CurrentUser
@@ -28,6 +29,7 @@ type SidebarProps = {
   onSelect: (id: number) => void
   onPrefetch: (id: number) => void
   onDeleteConversation: (id: number) => void
+  onUpdateConversation: (id: number, state: { archived?: boolean; pinned?: boolean; markedUnread?: boolean }) => void
   section: SidebarSection
   onSectionChange: (section: SidebarSection) => void
 }
@@ -42,14 +44,25 @@ export function Sidebar({
   onSelect,
   onPrefetch,
   onDeleteConversation,
+  onUpdateConversation,
   section,
   onSectionChange,
 }: SidebarProps) {
   const { t, locale } = useI18n()
   const [openActionsId, setOpenActionsId] = useState<number | null>(null)
+  const [filter, setFilter] = useState<ConversationFilter>('all')
   const holdTimer = useRef<number | null>(null)
   const longPressTriggered = useRef(false)
-  const visibleConversations = conversations.filter((conversation) => section === 'groups' ? conversation.isGroup : !conversation.isGroup)
+  const visibleConversations = conversations
+    .filter((conversation) => section === 'groups' ? conversation.isGroup : !conversation.isGroup)
+    .filter((conversation) => filter === 'archived' ? conversation.archived === true : conversation.archived !== true)
+    .filter((conversation) => filter !== 'unread' || conversation.unreadCount > 0 || conversation.markedUnread)
+    .filter((conversation) => filter !== 'starred' || conversation.hasStarredMessages)
+    .sort((a, b) => {
+      const pinA = a.pinnedAt ? new Date(a.pinnedAt).getTime() : 0
+      const pinB = b.pinnedAt ? new Date(b.pinnedAt).getTime() : 0
+      return pinB - pinA || new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime()
+    })
 
   useEffect(() => {
     if (openActionsId === null) return
@@ -109,6 +122,21 @@ export function Sidebar({
       </header>
 
       {section !== 'statuses' && <NewChat key={section} initialGroupMode={section === 'groups'} showModeToggle={section === 'chats'} onStarted={onSelect} />}
+
+      {section !== 'statuses' && (
+        <div className="flex shrink-0 gap-1.5 overflow-x-auto border-b px-3 py-2" role="group" aria-label={t.chat.chatFilters}>
+          {([
+            ['all', t.chat.filterAll],
+            ['unread', t.chat.filterUnread],
+            ['starred', t.chat.filterStarred],
+            ['archived', t.chat.filterArchived],
+          ] as const).map(([id, label]) => (
+            <button key={id} type="button" onClick={() => setFilter(id)} aria-pressed={filter === id} className={cn('shrink-0 rounded-full border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted', filter === id && 'border-primary/30 bg-primary/10 font-medium text-primary')}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
 
       <nav
         aria-label={t.chat.conversations}
@@ -220,6 +248,8 @@ export function Sidebar({
                           )}
                         >
                           {c.isMuted && <BellOff className="size-3" aria-label={t.chat.muteConversation} />}
+                          {c.pinned && <Pin className="size-3 text-primary" aria-label={t.chat.pinConversation} />}
+                          {c.hasStarredMessages && <Star className="size-3 fill-current text-amber-500" aria-label={t.chat.filterStarred} />}
                           {formatListTime(c.lastMessageAt, locale)}
                         </span>
                       </span>
@@ -227,7 +257,7 @@ export function Sidebar({
                         <span className="truncate text-sm text-muted-foreground">
                           {preview}
                         </span>
-                        {c.unreadCount > 0 && (
+                        {(c.unreadCount > 0 || c.markedUnread) && (
                           <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground">
                             <span aria-hidden="true">
                               {c.unreadCount.toLocaleString(locale)}
@@ -255,6 +285,15 @@ export function Sidebar({
                   </button>
                   {openActionsId === c.id && (
                     <div data-conversation-actions className="absolute end-2 top-12 z-30 min-w-48 rounded-xl border bg-popover p-1.5 text-popover-foreground shadow-xl" onClick={(event) => event.stopPropagation()}>
+                      <button type="button" className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setOpenActionsId(null); onUpdateConversation(c.id, { pinned: !c.pinned }) }}>
+                        {c.pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}{c.pinned ? t.chat.unpinConversation : t.chat.pinConversation}
+                      </button>
+                      <button type="button" className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setOpenActionsId(null); onUpdateConversation(c.id, { archived: !c.archived }) }}>
+                        {c.archived ? <ArchiveRestore className="size-3.5" /> : <Archive className="size-3.5" />}{c.archived ? t.chat.unarchiveConversation : t.chat.archiveConversation}
+                      </button>
+                      <button type="button" className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setOpenActionsId(null); onUpdateConversation(c.id, { markedUnread: !(c.unreadCount > 0 || c.markedUnread) }) }}>
+                        {(c.unreadCount > 0 || c.markedUnread) ? <MailOpen className="size-3.5" /> : <Mail className="size-3.5" />}{(c.unreadCount > 0 || c.markedUnread) ? t.chat.markRead : t.chat.markUnread}
+                      </button>
                       <button
                         type="button"
                         className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs text-destructive hover:bg-destructive/10"

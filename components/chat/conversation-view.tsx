@@ -12,6 +12,7 @@ import {
   CheckCheck,
   Clock,
   Copy,
+  Download,
   Forward,
   Flag,
   FileAudio,
@@ -60,6 +61,8 @@ const DEFAULT_GROUP_SETTINGS: GroupSettings = {
   sendMessages: 'all',
   editGroup: 'admins',
 }
+
+const MESSAGE_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '👏'] as const
 
 function renderMessageText(text: string): ReactNode[] {
   const parts: ReactNode[] = []
@@ -167,6 +170,11 @@ export function ConversationView({
   const [searchResults, setSearchResults] = useState<Array<{ id: number; body: string; createdAt: string }>>([])
   const [searching, setSearching] = useState(false)
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null)
+  const [editingMessageId, setEditingMessageId] = useState<number | null>(null)
+  const [editedBody, setEditedBody] = useState('')
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [savingExpiry, setSavingExpiry] = useState(false)
+  const [exportingConversation, setExportingConversation] = useState(false)
   const [forwarding, setForwarding] = useState<ChatMessage | null>(null)
   const [forwardTargetId, setForwardTargetId] = useState<number | ''>('')
   const [actionNotice, setActionNotice] = useState<string | null>(null)
@@ -352,6 +360,74 @@ export function ConversationView({
       onActivity()
     } catch {
       setSendError(t.errors.GENERIC)
+    }
+  }
+
+  async function saveMessageEdit(message: ChatMessage) {
+    const body = editedBody.trim()
+    if (!body || savingEdit) return
+    setSavingEdit(true)
+    try {
+      await edgeRequest({ action: 'edit-message', messageId: message.id, body })
+      setEditingMessageId(null)
+      setEditedBody('')
+      await mutate()
+      onActivity()
+    } catch (caught) {
+      const code = typeof caught === 'object' && caught && 'code' in caught ? String(caught.code) : 'GENERIC'
+      setSendError(errorMessage(t, code))
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
+  async function setMessageReaction(message: ChatMessage, emoji: string) {
+    const current = message.reactions?.find((reaction) => reaction.reactedByMe)?.emoji
+    try {
+      await edgeRequest({ action: 'set-message-reaction', messageId: message.id, emoji: current === emoji ? null : emoji })
+      setOpenMessageActions(null)
+      await mutate()
+      onActivity()
+    } catch (caught) {
+      const code = typeof caught === 'object' && caught && 'code' in caught ? String(caught.code) : 'GENERIC'
+      setSendError(errorMessage(t, code))
+    }
+  }
+
+  async function setExpiryDuration(value: string) {
+    if (savingExpiry) return
+    const durationSeconds = value ? Number(value) : null
+    setSavingExpiry(true)
+    try {
+      await edgeRequest({ action: 'set-expiry-duration', conversationId, durationSeconds })
+      await mutate()
+      setActionNotice(t.chat.expirySaved)
+      onActivity()
+    } catch (caught) {
+      const code = typeof caught === 'object' && caught && 'code' in caught ? String(caught.code) : 'GENERIC'
+      setSendError(errorMessage(t, code))
+    } finally {
+      setSavingExpiry(false)
+    }
+  }
+
+  async function exportConversation() {
+    if (exportingConversation) return
+    setExportingConversation(true)
+    try {
+      const result = await edgeRequest<{ conversation: { name: string; conversationId: number } }>({ action: 'export-conversation', conversationId })
+      const blob = new Blob([JSON.stringify(result.conversation, null, 2)], { type: 'application/json;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `message-conversation-${conversationId}-${new Date().toISOString().slice(0, 10)}.json`
+      link.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setActionNotice(t.chat.exportReady)
+    } catch {
+      setSendError(t.errors.GENERIC)
+    } finally {
+      setExportingConversation(false)
     }
   }
 
@@ -1020,9 +1096,15 @@ export function ConversationView({
                                 style={{ top: messageActionPosition.top, left: messageActionPosition.left }}
                                 className="fixed z-[100] grid w-52 max-w-[calc(100vw-1.5rem)] max-h-[min(60dvh,22rem)] gap-0.5 overflow-y-auto rounded-xl border bg-popover p-1.5 text-popover-foreground shadow-xl"
                               >
+                                <div className="grid grid-cols-4 gap-0.5 border-b pb-1" role="group" aria-label={t.chat.messageReactions}>
+                                  {MESSAGE_REACTIONS.map((emoji) => (
+                                    <button key={emoji} type="button" className="rounded-lg px-1 py-1.5 text-lg leading-none hover:bg-muted" aria-label={`${t.chat.messageReactions}: ${emoji}`} onClick={() => void setMessageReaction(message, emoji)}>{emoji}</button>
+                                  ))}
+                                </div>
                                 <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setReply(message); setOpenMessageActions(null) }}><Reply className="size-3.5" />{t.chat.reply}</button>
                                 <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { void copyMessage(message); setOpenMessageActions(null) }}><Copy className="size-3.5" />{t.chat.copyMessage}</button>
                                 <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setForwarding(message); setOpenMessageActions(null); pushChatPage('forward-message') }}><Forward className="size-3.5" />{t.chat.forwardMessage}</button>
+                                {mine && message.messageType === 'text' && Date.now() - new Date(message.createdAt).getTime() < 15 * 60_000 && <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { setEditingMessageId(message.id); setEditedBody(message.body); setOpenMessageActions(null) }}><Pencil className="size-3.5" />{t.chat.editMessage}</button>}
                                 <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { void runMessageAction('star', message); setOpenMessageActions(null) }}><Star className={cn('size-3.5', message.starredByMe && 'fill-current text-primary')} />{message.starredByMe ? t.chat.unstarMessage : t.chat.starMessage}</button>
                                 <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs hover:bg-muted" onClick={() => { void runMessageAction('pin', message); setOpenMessageActions(null) }}><Pin className="size-3.5" />{message.pinned ? t.chat.unpinMessage : t.chat.pinMessage}</button>
                                 {(mine || isAdmin) && <button type="button" className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-start text-xs text-destructive hover:bg-destructive/10" onClick={() => { void runMessageAction('delete', message); setOpenMessageActions(null) }}><Trash2 className="size-3.5" />{t.chat.deleteMessage}</button>}
@@ -1126,6 +1208,14 @@ export function ConversationView({
                       )}
                       {!isMembersAddedEvent && (message.deletedAt ? (
                         <p className="py-1 text-sm italic opacity-70">{t.chat.deletedMessage}</p>
+                      ) : editingMessageId === message.id ? (
+                        <form className="my-1 grid min-w-52 gap-2" onSubmit={(event) => { event.preventDefault(); void saveMessageEdit(message) }}>
+                          <textarea autoFocus rows={3} maxLength={4000} value={editedBody} onChange={(event) => setEditedBody(event.target.value)} aria-label={t.chat.editMessage} className="w-full resize-y rounded-lg border bg-background/70 px-2.5 py-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring" />
+                          <div className="flex justify-end gap-1.5">
+                            <Button type="button" size="sm" variant="ghost" disabled={savingEdit} onClick={() => { setEditingMessageId(null); setEditedBody('') }}>{t.chat.cancelEdit}</Button>
+                            <Button type="submit" size="sm" disabled={savingEdit || !editedBody.trim()}>{savingEdit ? '…' : t.chat.saveEdit}</Button>
+                          </div>
+                        </form>
                       ) : message.body ? (
                         <p
                           dir="auto"
@@ -1134,6 +1224,15 @@ export function ConversationView({
                           {renderMessageText(message.body)}
                         </p>
                       ) : null)}
+                      {!isMembersAddedEvent && !message.deletedAt && (message.reactions?.length ?? 0) > 0 && (
+                        <div className="mt-1 flex flex-wrap gap-1" role="group" aria-label={t.chat.messageReactions}>
+                          {message.reactions?.map((reaction) => (
+                            <button key={reaction.emoji} type="button" onClick={() => void setMessageReaction(message, reaction.emoji)} aria-pressed={reaction.reactedByMe} title={`${reaction.emoji} ${reaction.count}`} className={cn('flex items-center gap-1 rounded-full border bg-background/70 px-1.5 py-0.5 text-xs', reaction.reactedByMe && 'border-primary/50 bg-primary/10')}>
+                              <span>{reaction.emoji}</span><span>{reaction.count}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       <p
                         className={cn(
                           'mt-0.5 flex items-center justify-end gap-1 text-[11px]',
@@ -1143,6 +1242,7 @@ export function ConversationView({
                         <time dateTime={message.createdAt}>
                           {formatMessageTime(message.createdAt, locale)}
                         </time>
+                        {message.editedAt && <span>{t.chat.edited}</span>}
                         {!isMembersAddedEvent && mine &&
                           (message.pending ? (
                             <Clock className="size-3" aria-label={t.chat.sending} />
@@ -1211,6 +1311,7 @@ export function ConversationView({
                   <div className="absolute end-0 top-full z-10 min-w-52 rounded-xl border bg-popover p-1.5 shadow-xl">
                     {!isGroup && username && <button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setProfileMenuOpen(false); void shareContact() }}><Share2 className="size-4" />{t.chat.shareContact}</button>}
                     {!isGroup && otherUserId && <button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setProfileMenuOpen(false); setContactNameDraft(displayNameOverride ?? ''); setEditingContactName(true) }}><Pencil className="size-4" />{t.chat.editLocalName}</button>}
+                    <button type="button" disabled={exportingConversation} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted disabled:opacity-60" onClick={() => { setProfileMenuOpen(false); void exportConversation() }}><Download className="size-4" />{exportingConversation ? t.chat.exporting : t.chat.exportConversation}</button>
                   </div>
                 )}
               </div>
@@ -1343,6 +1444,26 @@ export function ConversationView({
                       </ul>
                     </div>
                   )}
+                </section>
+              )}
+
+              {(!isGroup || isGroupAdmin) && (
+                <section className="border-b px-4 py-4">
+                  <h3 className="text-sm font-semibold">{t.chat.disappearingMessages}</h3>
+                  <p className="mt-1 text-xs text-muted-foreground">{t.chat.disappearingMessagesHint}</p>
+                  <select
+                    value={data?.conversation?.expiresInSeconds == null ? '' : String(data.conversation.expiresInSeconds)}
+                    disabled={savingExpiry || !data?.conversation}
+                    onChange={(event) => void setExpiryDuration(event.target.value)}
+                    aria-label={t.chat.disappearingMessages}
+                    className="mt-3 h-10 w-full max-w-sm rounded-xl border bg-background px-3 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/30 disabled:opacity-60"
+                  >
+                    <option value="">{t.chat.expiryOff}</option>
+                    <option value="86400">{t.chat.expiryOneDay}</option>
+                    <option value="604800">{t.chat.expiryOneWeek}</option>
+                    <option value="7776000">{t.chat.expiryNinetyDays}</option>
+                  </select>
+                  {savingExpiry && <span className="ms-2 text-xs text-muted-foreground">…</span>}
                 </section>
               )}
 

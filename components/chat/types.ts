@@ -28,6 +28,17 @@ export type ConversationSummary = {
   lastSenderId: string | null
   unreadCount: number
   isMuted: boolean
+  archived?: boolean
+  pinned?: boolean
+  pinnedAt?: string | null
+  markedUnread?: boolean
+  hasStarredMessages?: boolean
+}
+
+export type MessageReaction = {
+  emoji: string
+  count: number
+  reactedByMe: boolean
 }
 
 export type ChatMessage = {
@@ -49,6 +60,9 @@ export type ChatMessage = {
   forwardedFrom?: number | null
   starredByMe?: boolean
   pinned?: boolean
+  editedAt?: string | null
+  expiresAt?: string | null
+  reactions?: MessageReaction[]
 }
 
 export type GroupSettings = {
@@ -81,6 +95,7 @@ export type ConversationDetail = {
     isGroupAdmin?: boolean
     groupSettings?: GroupSettings
     messageRequestStatus?: 'pending' | 'accepted' | 'declined' | null
+    expiresInSeconds?: number | null
   }
   otherLastReadAt: string | null
   otherLastDeliveredAt?: string | null

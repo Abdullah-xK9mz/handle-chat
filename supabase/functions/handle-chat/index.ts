@@ -96,6 +96,9 @@ async function rpc(name: string, args: Record<string, unknown>) {
       "GROUP_ADMIN_ONLY",
       "GROUP_PERMISSION_DENIED",
       "INVALID_GROUP_INVITE",
+      "MESSAGE_NOT_EDITABLE",
+      "INVALID_REACTION",
+      "INVALID_EXPIRY_DURATION",
       "NAME_REQUIRED",
       "NAME_TOO_LONG",
       "ABOUT_TOO_LONG",
@@ -260,6 +263,18 @@ async function serviceRequest(path: string, init: RequestInit = {}) {
     headers.set("Content-Type", "application/json");
   }
   return fetch(`${SUPABASE_URL}${path}`, { ...init, headers });
+}
+
+async function purgeExpiredMessages() {
+  const mediaPaths = await rpc("chat_get_expired_media_paths", {});
+  if (Array.isArray(mediaPaths) && mediaPaths.length > 0) {
+    const response = await serviceRequest("/storage/v1/object/chat-media", {
+      method: "DELETE",
+      body: JSON.stringify({ prefixes: mediaPaths }),
+    }).catch(() => null);
+    if (!response?.ok) return;
+  }
+  await rpc("chat_purge_expired_messages", {});
 }
 
 async function groupContext(conversationId: number, userId: string) {
@@ -799,6 +814,42 @@ async function handle(request: Request) {
         await rpc("chat_delete_conversation", { p_user_id: user.id, p_conversation_id: conversationId });
         return json({ ok: true });
       }
+      case "set-conversation-state": {
+        const conversationId = validConversationId(body.conversationId);
+        await rpc("chat_update_conversation_state", {
+          p_user_id: user.id,
+          p_conversation_id: conversationId,
+          p_archived: typeof body.archived === "boolean" ? body.archived : null,
+          p_pinned: typeof body.pinned === "boolean" ? body.pinned : null,
+          p_marked_unread: typeof body.markedUnread === "boolean" ? body.markedUnread : null,
+        });
+        return json({ ok: true });
+      }
+      case "set-expiry-duration": {
+        const conversationId = validConversationId(body.conversationId);
+        const duration = body.durationSeconds == null ? null : Number(body.durationSeconds);
+        if (duration !== null && !Number.isSafeInteger(duration)) throw new ChatError("INVALID_EXPIRY_DURATION", 400);
+        await rpc("chat_set_expiry_duration", {
+          p_user_id: user.id,
+          p_conversation_id: conversationId,
+          p_duration_seconds: duration,
+        });
+        return json({ ok: true });
+      }
+      case "export-conversation": {
+        const conversationId = validConversationId(body.conversationId);
+        const conversation = await rpc("chat_export_conversation", {
+          p_user_id: user.id,
+          p_conversation_id: conversationId,
+        });
+        if (!conversation) throw new ChatError("NOT_FOUND", 404);
+        return json({ conversation });
+      }
+      case "export-user-data": {
+        const data = await rpc("chat_export_user_data", { p_user_id: user.id });
+        if (!data?.profile) throw new ChatError("NOT_FOUND", 404);
+        return json({ data });
+      }
       case "search-users": {
         const query =
           typeof body.query === "string"
@@ -816,10 +867,17 @@ async function handle(request: Request) {
         return json({ users });
       }
       case "list-conversations": {
-        const conversations = await rpc("chat_list_conversations", {
-          p_user_id: user.id,
-        });
-        return json({ conversations });
+        await purgeExpiredMessages();
+        const [conversations, features] = await Promise.all([
+          rpc("chat_list_conversations", { p_user_id: user.id }),
+          rpc("chat_get_conversation_features", { p_user_id: user.id }),
+        ]);
+        const featureMap = new Map((Array.isArray(features) ? features : []).map((item: Record<string, unknown>) => [Number(item.id), item]));
+        const enriched = (Array.isArray(conversations) ? conversations : []).map((conversation: Record<string, unknown>) => ({
+          ...conversation,
+          ...(featureMap.get(Number(conversation.id)) ?? {}),
+        }));
+        return json({ conversations: enriched });
       }
       case "start-conversation": {
         const username =
@@ -837,11 +895,47 @@ async function handle(request: Request) {
       }
       case "get-messages": {
         const conversationId = validConversationId(body.conversationId);
+        await purgeExpiredMessages();
         const [detail, blockState] = await Promise.all([
           rpc("chat_get_messages", { p_conversation_id: conversationId, p_user_id: user.id }),
           rpc("chat_get_block_state", { p_conversation_id: conversationId, p_user_id: user.id }),
         ]);
         if (!detail) throw new ChatError("NOT_FOUND", 404);
+        const [features] = await Promise.all([
+          rpc("chat_get_message_features", { p_conversation_id: conversationId, p_user_id: user.id }),
+          rpc("chat_update_conversation_state", {
+            p_user_id: user.id,
+            p_conversation_id: conversationId,
+            p_archived: null,
+            p_pinned: null,
+            p_marked_unread: false,
+          }),
+        ]);
+        const messageFeatures = new Map((Array.isArray(features?.messages) ? features.messages : []).map((item: Record<string, unknown>) => [Number(item.id), item]));
+        const now = Date.now();
+        detail.messages = (Array.isArray(detail.messages) ? detail.messages : [])
+          .filter((message: Record<string, unknown>) => {
+            const metadata = messageFeatures.get(Number(message.id));
+            const expiresAt = typeof metadata?.expiresAt === "string" ? Date.parse(metadata.expiresAt) : Number.NaN;
+            return !Number.isFinite(expiresAt) || expiresAt > now;
+          })
+          .map((message: Record<string, unknown>) => {
+            const metadata = messageFeatures.get(Number(message.id));
+            const parentMetadata = messageFeatures.get(Number(message.replyTo));
+            const parentExpired = typeof parentMetadata?.expiresAt === "string" && Date.parse(parentMetadata.expiresAt) <= now;
+            return {
+              ...message,
+              editedAt: metadata?.editedAt ?? null,
+              expiresAt: metadata?.expiresAt ?? null,
+              reactions: Array.isArray(metadata?.reactions) ? metadata.reactions : [],
+              ...(parentExpired ? { replyBody: null, replyDeleted: true } : {}),
+            };
+          });
+        if (detail.pinnedMessage) {
+          const pinnedMetadata = messageFeatures.get(Number(detail.pinnedMessage.id));
+          if (typeof pinnedMetadata?.expiresAt === "string" && Date.parse(pinnedMetadata.expiresAt) <= now) detail.pinnedMessage = null;
+        }
+        if (detail.conversation) detail.conversation.expiresInSeconds = features?.expiresInSeconds ?? null;
         if (detail.conversation?.isGroup) {
           const group = await groupContext(conversationId, user.id);
           const membersResponse = await serviceRequest(
@@ -1176,6 +1270,18 @@ async function handle(request: Request) {
       case "delete-message": {
         const messageId = validMessageId(body.messageId);
         await rpc("chat_delete_message", { p_user_id: user.id, p_message_id: messageId });
+        return json({ ok: true });
+      }
+      case "edit-message": {
+        const messageId = validMessageId(body.messageId);
+        if (typeof body.body !== "string") throw new ChatError("EMPTY_MESSAGE", 400);
+        await rpc("chat_edit_message", { p_user_id: user.id, p_message_id: messageId, p_body: body.body });
+        return json({ ok: true });
+      }
+      case "set-message-reaction": {
+        const messageId = validMessageId(body.messageId);
+        const emoji = body.emoji == null ? null : String(body.emoji);
+        await rpc("chat_set_message_reaction", { p_user_id: user.id, p_message_id: messageId, p_emoji: emoji });
         return json({ ok: true });
       }
       case "star-message": {

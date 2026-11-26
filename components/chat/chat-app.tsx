@@ -271,6 +271,16 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
     }
   }
 
+  async function updateConversationState(id: number, state: { archived?: boolean; pinned?: boolean; markedUnread?: boolean }) {
+    try {
+      await edgeRequest({ action: 'set-conversation-state', conversationId: id, ...state })
+      if ((state.archived === true || state.markedUnread === true) && activeIdRef.current === id) setActiveId(null)
+      await mutate()
+    } catch {
+      window.alert(t.errors.GENERIC)
+    }
+  }
+
   return (
     <div className="fixed inset-x-0 z-10 w-screen overflow-hidden bg-background" style={{ top: 'var(--chat-viewport-top, 0px)', height: 'var(--chat-viewport-height, 100dvh)' }}>
       {joinNotice && <div role="status" className="absolute inset-x-4 top-3 z-50 mx-auto max-w-md rounded-xl border bg-background px-4 py-3 text-center text-sm shadow-lg">{joinNotice}</div>}
@@ -291,6 +301,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
             onSelect={openConversation}
             onPrefetch={prefetchConversation}
             onDeleteConversation={(id) => void deleteConversation(id)}
+            onUpdateConversation={(id, state) => void updateConversationState(id, state)}
             section={section}
             onSectionChange={changeSection}
           />
