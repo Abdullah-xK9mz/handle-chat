@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { Archive, ArchiveRestore, BellOff, CircleDashed, Mail, MailOpen, MessageSquareText, MoreHorizontal, Pin, PinOff, Settings, Shield, Star, Trash2, Users } from 'lucide-react'
+import { Archive, ArchiveRestore, BellOff, CircleDashed, Mail, MailOpen, MessageSquareText, MoreHorizontal, Pin, PinOff, Settings, Shield, Sparkles, Star, Trash2, Users } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/components/i18n-provider'
 import { LanguageToggle } from '@/components/language-toggle'
@@ -16,7 +16,7 @@ import {
 import { UserAvatar } from './user-avatar'
 import { StatusStrip } from './status-strip'
 
-export type SidebarSection = 'chats' | 'groups' | 'statuses'
+export type SidebarSection = 'chats' | 'groups' | 'statuses' | 'assistant'
 type ConversationFilter = 'all' | 'unread' | 'starred' | 'archived'
 
 type SidebarProps = {
@@ -121,9 +121,9 @@ export function Sidebar({
         )}
       </header>
 
-      {section !== 'statuses' && <NewChat key={section} initialGroupMode={section === 'groups'} showModeToggle={section === 'chats'} onStarted={onSelect} />}
+      {section !== 'statuses' && section !== 'assistant' && <NewChat key={section} initialGroupMode={section === 'groups'} showModeToggle={section === 'chats'} onStarted={onSelect} />}
 
-      {section !== 'statuses' && (
+      {section !== 'statuses' && section !== 'assistant' && (
         <div className="flex shrink-0 gap-1.5 overflow-x-auto border-b px-3 py-2" role="group" aria-label={t.chat.chatFilters}>
           {([
             ['all', t.chat.filterAll],
@@ -142,7 +142,13 @@ export function Sidebar({
         aria-label={t.chat.conversations}
         className="min-h-0 flex-1 overflow-y-auto"
       >
-        {section === 'statuses' ? <StatusStrip currentUser={currentUser} fullPage /> : isLoading ? (
+        {section === 'statuses' ? <StatusStrip currentUser={currentUser} fullPage /> : section === 'assistant' ? (
+          <div className="flex flex-col items-center gap-3 p-6 text-center">
+            <div className="flex size-12 items-center justify-center rounded-2xl bg-primary/10 text-primary"><Sparkles className="size-6" aria-hidden="true" /></div>
+            <p className="text-sm font-medium">{t.chat.ai.title}</p>
+            <p className="text-sm text-muted-foreground text-pretty">{t.chat.ai.subtitle}</p>
+          </div>
+        ) : isLoading ? (
           <ul className="flex flex-col gap-1 p-2" aria-hidden="true">
             {Array.from({ length: 4 }).map((_, i) => (
               <li key={i} className="flex items-center gap-3 rounded-xl p-3">
@@ -313,13 +319,14 @@ export function Sidebar({
           </ul>
         )}
       </nav>
-      <nav aria-label={t.chat.tabs.chats} className="grid shrink-0 grid-cols-3 border-t bg-background px-2 pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1 md:pb-1">
+      <nav aria-label={t.chat.tabs.chats} className="grid shrink-0 grid-cols-4 border-t bg-background px-1 pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1 md:pb-1">
         {([
           ['chats', t.chat.tabs.chats, MessageSquareText],
           ['groups', t.chat.tabs.groups, Users],
           ['statuses', t.chat.tabs.statuses, CircleDashed],
+          ['assistant', t.chat.tabs.assistant, Sparkles],
         ] as const).map(([id, label, Icon]) => (
-          <button key={id} type="button" onClick={() => onSectionChange(id)} aria-current={section === id ? 'page' : undefined} className={cn('flex min-h-14 flex-col items-center justify-center gap-1 rounded-xl text-[11px] text-muted-foreground transition-colors hover:bg-muted', section === id && 'bg-primary/10 font-semibold text-primary')}>
+          <button key={id} type="button" onClick={() => onSectionChange(id)} aria-current={section === id ? 'page' : undefined} className={cn('flex min-h-14 flex-col items-center justify-center gap-1 rounded-xl text-[10px] text-muted-foreground transition-colors hover:bg-muted sm:text-[11px]', section === id && 'bg-primary/10 font-semibold text-primary')}>
             <Icon className="size-5" aria-hidden="true" />
             <span>{label}</span>
           </button>

@@ -11,6 +11,7 @@ import { getNativeApp } from '@/lib/native-app'
 import { CONTACT_NAMES_CHANGED, getLocalContactNames } from '@/lib/local-contact-names'
 import { NOTIFICATION_PREVIEW_KEY, readBooleanPreference } from '@/lib/chat-preferences'
 import { ConversationView } from './conversation-view'
+import { GeneralAssistant } from './general-assistant'
 import { Sidebar, type SidebarSection } from './sidebar'
 import {
   fetcher,
@@ -293,7 +294,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
         <aside
           className={cn(
             'w-full flex-col border-e md:flex md:w-80 lg:w-96',
-            activeId ? 'hidden' : 'flex',
+            activeId || section === 'assistant' ? 'hidden md:flex' : 'flex',
           )}
         >
           <Sidebar
@@ -315,7 +316,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
         <main
           className={cn(
             'min-h-0 min-w-0 flex-1 flex-col bg-canvas md:flex',
-            activeId ? 'flex' : 'hidden',
+            activeId || section === 'assistant' ? 'flex' : 'hidden',
           )}
         >
           {activeId ? (
@@ -335,6 +336,8 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
               onOpenConversation={openConversation}
               availableConversations={conversations}
             />
+          ) : section === 'assistant' ? (
+            <GeneralAssistant onBack={() => changeSection('chats')} />
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
               <div className="flex size-16 items-center justify-center rounded-3xl bg-secondary text-primary">

@@ -738,6 +738,52 @@ async function handle(request: Request) {
         if (!profile) throw new ChatError("UNAUTHORIZED", 401);
         return json(profile);
       }
+      case "list-general-ai-history": {
+        const response = await serviceRequest(
+          `/rest/v1/general_ai_messages?select=id,role,body,created_at&user_id=eq.${encodeURIComponent(user.id)}&order=id.desc&limit=80`,
+        );
+        if (!response.ok) throw new ChatError("GENERIC", 500);
+        const messages = await response.json();
+        return json({ messages: Array.isArray(messages) ? messages.reverse() : [] });
+      }
+      case "save-general-ai-exchange": {
+        const userMessage = typeof body.userMessage === "string" ? body.userMessage.trim() : "";
+        const assistantMessage = typeof body.assistantMessage === "string" ? body.assistantMessage.trim() : "";
+        if (!userMessage || userMessage.length > 2000 || !assistantMessage || assistantMessage.length > 12000) {
+          throw new ChatError("INVALID_AI_EXCHANGE", 400);
+        }
+        const insertResponse = await serviceRequest("/rest/v1/general_ai_messages", {
+          method: "POST",
+          headers: { Prefer: "return=minimal" },
+          body: JSON.stringify([
+            { user_id: user.id, role: "user", body: userMessage },
+            { user_id: user.id, role: "assistant", body: assistantMessage },
+          ]),
+        });
+        if (!insertResponse.ok) throw new ChatError("GENERIC", 500);
+
+        const boundaryResponse = await serviceRequest(
+          `/rest/v1/general_ai_messages?select=id&user_id=eq.${encodeURIComponent(user.id)}&order=id.desc&offset=80&limit=1`,
+        );
+        if (boundaryResponse.ok) {
+          const boundary = (await boundaryResponse.json()) as Array<{ id: number }>;
+          if (boundary[0]?.id) {
+            await serviceRequest(
+              `/rest/v1/general_ai_messages?user_id=eq.${encodeURIComponent(user.id)}&id=lte.${boundary[0].id}`,
+              { method: "DELETE", headers: { Prefer: "return=minimal" } },
+            );
+          }
+        }
+        return json({ saved: true });
+      }
+      case "clear-general-ai-history": {
+        const response = await serviceRequest(
+          `/rest/v1/general_ai_messages?user_id=eq.${encodeURIComponent(user.id)}`,
+          { method: "DELETE", headers: { Prefer: "return=minimal" } },
+        );
+        if (!response.ok) throw new ChatError("GENERIC", 500);
+        return json({ cleared: true });
+      }
       case "list-own-devices": {
         const response = await serviceRequest(
           `/rest/v1/device_registry?select=device_id,last_seen_at,user_agent&user_id=eq.${encodeURIComponent(user.id)}&order=last_seen_at.desc&limit=100`,
