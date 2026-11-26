@@ -20,7 +20,7 @@ type HordeChunk = { choices?: Array<{ delta?: { content?: string | null } }> }
 
 const HORDE_CHAT_URL = 'https://oai.aihorde.net/v1/chat/completions'
 const HORDE_GUEST_KEY = '0000000000'
-const HORDE_MODEL = 'koboldcpp/Llama-3.2-3B-Instruct'
+const HORDE_MODEL = 'koboldcpp/Qwen3-14B'
 const MAX_QUESTION_LENGTH = 2000
 const GENERAL_ASSISTANT_INSTRUCTIONS = [
   'You are Message’s general text assistant. Answer general-knowledge questions, explain everyday topics, and help with simple translations in the language the user used.',
@@ -45,7 +45,7 @@ async function streamHordeAnswer(
       model: HORDE_MODEL,
       messages: [{ role: 'system', content: GENERAL_ASSISTANT_INSTRUCTIONS }, ...history],
       max_tokens: 384,
-      temperature: 0.6,
+      temperature: 0.4,
       stream: true,
     }),
     signal,
