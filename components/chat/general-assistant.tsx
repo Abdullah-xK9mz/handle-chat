@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { ArrowLeft, Copy, Download, Forward, ImagePlus, Info, LoaderCircle, MessageCircle, Mic, Move, PanelLeft, Pencil, Pin, Plus, RefreshCw, Reply, Send, Sparkles, Star, Trash2, Volume2, X } from 'lucide-react'
+import { ArrowLeft, Copy, Download, Forward, ImagePlus, Info, LoaderCircle, MessageCircle, Mic, Move, PanelLeft, Pencil, Pin, Plus, RefreshCw, Reply, Send, Sparkles, Star, Trash2, X } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -2061,7 +2061,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
                       </button>
                       {speechOutputSupported && (
                         <button type="button" className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs hover:bg-muted" onClick={(event) => { event.stopPropagation(); toggleSpeechOutput(message) }} aria-label={speakingMessageId === message.id ? t.chat.ai.stopReading : t.chat.ai.readAloud} title={speakingMessageId === message.id ? t.chat.ai.stopReading : t.chat.ai.readAloud}>
-                          {speakingMessageId === message.id ? <span aria-hidden="true">⏹️</span> : <Volume2 className="size-3.5" />}
+                          {speakingMessageId === message.id ? <span aria-hidden="true">⏹️</span> : <Mic className="size-3.5" />}
                           {speakingMessageId === message.id ? t.chat.ai.stopReading : t.chat.ai.readAloud}
                         </button>
                       )}

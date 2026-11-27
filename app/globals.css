@@ -85,6 +85,12 @@
 }
 
 @layer base {
+  html,
+  body {
+    overscroll-behavior-x: none;
+    overscroll-behavior-y: none;
+  }
+
   * {
     @apply border-border outline-ring/50;
   }
