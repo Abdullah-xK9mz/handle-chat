@@ -33,7 +33,7 @@ const HORDE_MODELS = [
   'Qwen/Qwen3.8-Flash-Next',
 ]
 const MAX_QUESTION_LENGTH = 2000
-const MAX_ANSWER_LENGTH = 5000
+const MAX_ANSWER_LENGTH = 50_000
 const HISTORY_IMPORT_BATCH_SIZE = 25
 const HISTORY_IMPORT_BATCH_CHARACTERS = 250_000
 const AI_CONTACT_NAME_PREFIX = 'message.ai-contact-name.v1'
@@ -112,7 +112,8 @@ async function streamHordeAnswer(
     body: JSON.stringify({
       models: HORDE_MODELS,
       messages: [{ role: 'system', content: `${GENERAL_ASSISTANT_INSTRUCTIONS}\n\nCurrent date and time: ${currentDateTime}` }, ...history],
-      max_tokens: 3000,
+      // AI Horde rejects max_tokens above 16,384 on its OpenAI-compatible API.
+      max_tokens: 16_384,
       temperature: 0.4,
       stream: true,
     }),
