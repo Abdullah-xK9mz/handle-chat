@@ -56,6 +56,7 @@ const HORDE_MODELS = [
 const MAX_QUESTION_LENGTH = 2000
 const MAX_ANSWER_LENGTH = 50_000
 const MAX_HORDE_HISTORY_CHARACTERS = 24_000
+const MAX_HORDE_OUTPUT_TOKENS = 16_384
 const HISTORY_IMPORT_BATCH_SIZE = 25
 const HISTORY_IMPORT_BATCH_CHARACTERS = 250_000
 const AI_CONTACT_NAME_PREFIX = 'message.ai-contact-name.v1'
@@ -196,6 +197,18 @@ function fitHordeHistory(history: HordeChatMessage[]) {
     remaining -= content.length
   }
   return recent
+}
+
+function chooseHordeOutputTokens(question: string, modelQuestion: string) {
+  const text = `${question}\n${modelQuestion}`.toLocaleLowerCase()
+  if (/50\s*(?:,|\s)?000|50\s*k\b|50\s*ألف|خمسين\s*ألف|\d{3,}\s*(?:كلمة|حرف|توكن|words?|tokens?|characters?|chars?)|(?:maximum|max(?:imum)?)[^.!?\n]{0,35}(?:tokens?|characters?|chars?|words?|length|output|answer)|(?:أقصى|أكبر|أعلى)[^.!?\n]{0,30}(?:توكن|حرف|كلمة|طول|إجابة|رد|حد|عدد)|أقصى حاجة|as much as possible|رد طويل جدًا|بالتفصيل الشديد|شامل جدًا|very detailed|comprehensive|exhaustive|full code|الكود كامل|كود كامل/.test(text)) {
+    return MAX_HORDE_OUTPUT_TOKENS
+  }
+  if (/بالتفصيل|تفصيلي|خطوة بخطوة|مقال|بحث|تقرير|قارن|حلل|اشرح|شرح|برمج|كود|code|program|essay|report|compare|analy[sz]e|explain|step.by.step|detailed|long answer/.test(text) || question.length > 900) {
+    return 8_192
+  }
+  if (question.length > 250 || /لماذا|كيف|what|why|how|explain/.test(text)) return 2_048
+  return 1_024
 }
 
 function shouldOfferCodeContinue(messages: AiMessage[], message: AiMessage) {
@@ -360,6 +373,7 @@ async function streamHordeAnswer(
   currentDateTime: string,
   onText: (text: string) => void,
   signal: AbortSignal,
+  requestedMaxTokens: number,
 ) {
   const retryDelay = (milliseconds: number) => new Promise<void>((resolve, reject) => {
     if (signal.aborted) {
@@ -380,7 +394,7 @@ async function streamHordeAnswer(
 
   const retryable = (error: unknown) => Boolean(error && typeof error === 'object' && 'retryable' in error && error.retryable === true)
   const retryAfter = (error: unknown) => error && typeof error === 'object' && 'retryAfterMs' in error && typeof error.retryAfterMs === 'number' ? error.retryAfterMs : 0
-  const failure = (message: string, canRetry: boolean, retryAfterMs = 0) => Object.assign(new Error(message), { retryable: canRetry, retryAfterMs })
+  const failure = (message: string, canRetry: boolean, retryAfterMs = 0, code = '') => Object.assign(new Error(message), { retryable: canRetry, retryAfterMs, code })
   const waitFromHeader = (value: string | null) => {
     if (!value) return 0
     const seconds = Number(value)
@@ -389,7 +403,7 @@ async function streamHordeAnswer(
     return Number.isFinite(date) ? Math.max(0, Math.min(15_000, date - Date.now())) : 0
   }
 
-  const requestOnce = async (models: string[]) => {
+  const requestOnce = async (models: string[], maxTokens: number) => {
     const response = await fetch(HORDE_CHAT_URL, {
     method: 'POST',
     headers: {
@@ -400,8 +414,7 @@ async function streamHordeAnswer(
       models,
       messages: [{ role: 'system', content: `${GENERAL_ASSISTANT_INSTRUCTIONS}\n\nCurrent date and time: ${currentDateTime}` }, ...fitHordeHistory(history)],
       horde: { context_fit: 'truncate_oldest', include_reasoning: false },
-      // The shared anonymous key is refused when workers require upfront kudos above 4,096 tokens.
-      max_tokens: 4_096,
+      max_tokens: maxTokens,
       temperature: 0.4,
       stream: true,
     }),
@@ -411,15 +424,20 @@ async function streamHordeAnswer(
     if (!response.ok) {
       const retryHeader = response.headers.get('x-should-retry')
       let detail = `HTTP ${response.status}`
+      let providerCode = ''
+      let providerRetryAfter = 0
       try {
         const payload: unknown = await response.json()
-        const error = (payload as { error?: string | { message?: string } })?.error
+        const parsed = payload as { error?: string | { message?: string; code?: string }; code?: string; metadata?: { rc?: string; retry_after?: number } }
+        const error = parsed?.error
         detail = typeof error === 'string' ? error : error?.message || detail
+        providerCode = typeof error === 'object' && error?.code ? error.code : parsed?.code || parsed?.metadata?.rc || ''
+        providerRetryAfter = typeof parsed?.metadata?.retry_after === 'number' ? parsed.metadata.retry_after * 1000 : 0
       } catch {
         // The response body is optional; the HTTP status is enough to choose a retry policy.
       }
-      const canRetry = retryHeader !== 'false' && (response.status === 403 || response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500)
-      throw failure(`HORDE_${response.status}: ${detail}`, canRetry, waitFromHeader(response.headers.get('retry-after')))
+      const canRetry = retryHeader !== 'false' && (response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500 || (response.status === 403 && (providerCode === 'KudosUpfront' || providerCode === 'AnonForbidden')))
+      throw failure(`HORDE_${response.status}: ${detail}`, canRetry, Math.max(waitFromHeader(response.headers.get('retry-after')), providerRetryAfter), providerCode)
     }
     if (!response.body) throw failure('HORDE_NO_STREAM', true)
 
@@ -449,7 +467,8 @@ async function streamHordeAnswer(
       }
       if (chunk.error) {
         const detail = typeof chunk.error === 'string' ? chunk.error : chunk.error.message || chunk.error.code || 'Stream error'
-        throw failure(`HORDE_STREAM: ${detail}`, response.headers.get('x-should-retry') !== 'false', waitFromHeader(response.headers.get('retry-after')))
+        const code = typeof chunk.error === 'object' ? chunk.error.code || '' : ''
+        throw failure(`HORDE_STREAM: ${detail}`, response.headers.get('x-should-retry') !== 'false', waitFromHeader(response.headers.get('retry-after')), code)
       }
       if (chunk.choices?.some((choice) => choice.finish_reason === 'length')) stoppedAtTokenLimit = true
       if (chunk.choices?.some((choice) => choice.finish_reason != null)) streamFinished = true
@@ -496,17 +515,22 @@ async function streamHordeAnswer(
   }
 
   let lastError: unknown = null
+  let maxTokens = requestedMaxTokens
+  let preferAlternateModel = false
   for (let attempt = 0; attempt < 3; attempt += 1) {
     if (signal.aborted) throw new DOMException('The request was aborted.', 'AbortError')
     try {
-      // Rotate the preferred worker on retries so a busy model does not block every attempt.
-      const models = attempt % 2 === 0 ? HORDE_MODELS : [...HORDE_MODELS].reverse()
-      return await requestOnce(models)
+      // Keep the high-output model after a kudos rejection; rotate on other transient failures.
+      const models = preferAlternateModel ? [...HORDE_MODELS].reverse() : HORDE_MODELS
+      return await requestOnce(models, maxTokens)
     } catch (error) {
       if (signal.aborted) throw error
       const normalizedError = error instanceof TypeError ? failure('HORDE_NETWORK_ERROR', true) : error
       lastError = normalizedError
       if (!retryable(normalizedError) || attempt === 2) break
+      if (normalizedError && typeof normalizedError === 'object' && 'code' in normalizedError && normalizedError.code === 'KudosUpfront') {
+        maxTokens = maxTokens > 4_096 ? 4_096 : maxTokens > 2_048 ? 2_048 : 1_024
+      } else preferAlternateModel = !preferAlternateModel
       onText('')
       const backoff = Math.min(8_000, 1_000 * 2 ** attempt)
       await retryDelay(Math.max(backoff, retryAfter(normalizedError)))
@@ -1115,6 +1139,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
         new Date().toLocaleString('ar-EG', { dateStyle: 'full', timeStyle: 'short' }),
         (body) => setMessages((current) => current.map((message) => message.id === answerId ? { ...message, body } : message)),
         controller.signal,
+        chooseHordeOutputTokens(question, modelQuestion),
       )
       const answer = answerResult.text
       const codeIncomplete = isCodeReply(answer) && (hasUnclosedCodeFence(answer) || answerResult.stoppedAtTokenLimit)
