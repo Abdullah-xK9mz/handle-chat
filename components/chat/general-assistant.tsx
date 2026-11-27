@@ -33,6 +33,7 @@ const HORDE_MODELS = [
   'Qwen/Qwen3.8-Flash-Next',
 ]
 const MAX_QUESTION_LENGTH = 2000
+const MAX_ANSWER_LENGTH = 5000
 const HISTORY_IMPORT_BATCH_SIZE = 25
 const HISTORY_IMPORT_BATCH_CHARACTERS = 250_000
 const AI_CONTACT_NAME_PREFIX = 'message.ai-contact-name.v1'
@@ -111,7 +112,7 @@ async function streamHordeAnswer(
     body: JSON.stringify({
       models: HORDE_MODELS,
       messages: [{ role: 'system', content: `${GENERAL_ASSISTANT_INSTRUCTIONS}\n\nCurrent date and time: ${currentDateTime}` }, ...history],
-      max_tokens: 1000,
+      max_tokens: 3000,
       temperature: 0.4,
       stream: true,
     }),
@@ -125,6 +126,7 @@ async function streamHordeAnswer(
   const decoder = new TextDecoder()
   let buffer = ''
   let answer = ''
+  let answerLimitReached = false
 
   const consumeLine = (line: string) => {
     const trimmed = line.trim()
@@ -134,9 +136,11 @@ async function streamHordeAnswer(
     try {
       const chunk = JSON.parse(payload) as HordeChunk
       const addition = chunk.choices?.[0]?.delta?.content
-      if (typeof addition === 'string' && addition) {
-        answer += addition
+      if (typeof addition === 'string' && addition && !answerLimitReached) {
+        const remainingCharacters = MAX_ANSWER_LENGTH - answer.length
+        answer += addition.slice(0, remainingCharacters)
         onText(answer)
+        answerLimitReached = answer.length >= MAX_ANSWER_LENGTH
       }
     } catch {
       // Ignore non-JSON keep-alive lines from the streaming endpoint.
@@ -149,10 +153,17 @@ async function streamHordeAnswer(
       buffer += decoder.decode(value, { stream: !done })
       const lines = buffer.split(/\r?\n/)
       buffer = lines.pop() ?? ''
-      for (const line of lines) consumeLine(line)
+      for (const line of lines) {
+        consumeLine(line)
+        if (answerLimitReached) break
+      }
+      if (answerLimitReached) {
+        await reader.cancel().catch(() => undefined)
+        break
+      }
       if (done) break
     }
-    if (buffer) consumeLine(buffer)
+    if (buffer && !answerLimitReached) consumeLine(buffer)
   } finally {
     reader.releaseLock()
   }
