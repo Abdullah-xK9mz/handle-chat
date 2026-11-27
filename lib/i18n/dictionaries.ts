@@ -61,7 +61,7 @@ const en = {
     tabs: { chats: 'Chats', groups: 'Groups', statuses: 'Status', assistant: 'AI' },
     ai: {
       title: 'General AI',
-      subtitle: 'Ask general questions. Text only; no live web search.',
+      subtitle: 'Ask general questions or work with images. No live web search.',
       intro: 'Ask me a general knowledge question.',
       privacy: 'Questions go to an external AI provider. Do not send passwords or private information.',
       privacyTitle: 'AI privacy information',
@@ -520,7 +520,7 @@ const ar: Dictionary = {
     tabs: { chats: 'المحادثات', groups: 'المجموعات', statuses: 'الحالات', assistant: 'المساعد' },
     ai: {
       title: 'مساعد عام',
-      subtitle: 'اسأل أسئلة عامة؛ الإجابات نصية فقط، بلا بحث مباشر في الإنترنت.',
+      subtitle: 'اسأل أسئلة عامة أو أرفق صورة للتعامل معها. لا يوجد بحث مباشر في الإنترنت.',
       intro: 'اسألني سؤالًا في المعرفة العامة.',
       privacy: 'يُرسل سؤالك إلى مزود ذكاء اصطناعي خارجي. لا ترسل كلمات مرور أو معلومات خاصة.',
       privacyTitle: 'معلومات خصوصية المساعد',
