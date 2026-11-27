@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import { AtSign, LockKeyhole, MessageCircle, UserRound } from 'lucide-react'
+import { AtSign, LockKeyhole, MessageCircle, UserRound, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { createAccount, edgeRequest, getSession, signInWithUsername, SupabaseError } from '@/lib/supabase'
 import { USERNAME_PATTERN, normalizeUsername } from '@/lib/username'
@@ -30,6 +30,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
   const { t } = useI18n()
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
+  const [recoveryHelpOpen, setRecoveryHelpOpen] = useState(false)
   const isSignUp = mode === 'sign-up'
 
   useEffect(() => {
@@ -46,6 +47,15 @@ export function AuthForm({ mode }: { mode: Mode }) {
     }).catch(() => undefined)
     return () => { cancelled = true }
   }, [router])
+
+  useEffect(() => {
+    if (!recoveryHelpOpen) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setRecoveryHelpOpen(false)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [recoveryHelpOpen])
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -139,9 +149,28 @@ export function AuthForm({ mode }: { mode: Mode }) {
               {pending ? (isSignUp ? t.auth.creatingAccount : t.auth.signingIn) : (isSignUp ? t.auth.createAccount : t.auth.signIn)}
             </Button>
           </form>
+          {!isSignUp && (
+            <button type="button" className="mt-3 w-full text-center text-sm text-[#d8c58c] underline-offset-4 hover:underline" onClick={() => setRecoveryHelpOpen(true)}>
+              {t.auth.forgotPassword}
+            </button>
+          )}
         </section>
         <p className="mt-2 text-center text-xs text-[#a49b89]">{t.appName}</p>
       </div>
+      {recoveryHelpOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setRecoveryHelpOpen(false)}>
+          <section role="dialog" aria-modal="true" aria-labelledby="recovery-dialog-title" className="w-full max-w-md rounded-2xl border border-[#48402d] bg-[#171613] p-5 text-[#f2eee5] shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="mb-3 flex items-center gap-2">
+              <h2 id="recovery-dialog-title" className="flex-1 text-lg font-semibold">{t.auth.recoveryTitle}</h2>
+              <button type="button" className="rounded-full p-2 text-[#b8b1a1] hover:bg-white/10 hover:text-white" onClick={() => setRecoveryHelpOpen(false)} aria-label={t.auth.recoveryClose}>
+                <X className="size-4" />
+              </button>
+            </div>
+            <p className="text-sm leading-6 text-[#c7c0b1]">{t.auth.recoveryExplanation}</p>
+            <Button type="button" className="mt-5 w-full" onClick={() => setRecoveryHelpOpen(false)}>{t.auth.recoveryClose}</Button>
+          </section>
+        </div>
+      )}
     </main>
   )
 }
