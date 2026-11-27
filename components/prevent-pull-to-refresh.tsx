@@ -6,15 +6,18 @@ export function PreventPullToRefresh() {
   useEffect(() => {
     let startY: number | null = null
     let startTarget: EventTarget | null = null
+    let gestureDirection: 'up' | 'down' | null = null
 
     const onTouchStart = (event: TouchEvent) => {
       if (event.touches.length !== 1) {
         startY = null
         startTarget = null
+        gestureDirection = null
         return
       }
       startY = event.touches[0]?.clientY ?? null
       startTarget = event.target
+      gestureDirection = null
     }
 
     const canScrollTowardTop = (target: EventTarget | null) => {
@@ -34,15 +37,23 @@ export function PreventPullToRefresh() {
     const onTouchMove = (event: TouchEvent) => {
       if (startY === null || event.touches.length !== 1) return
       const currentY = event.touches[0]?.clientY
-      if (currentY === undefined || currentY <= startY) return
+      if (currentY === undefined) return
+      const distance = currentY - startY
+      if (gestureDirection === null) {
+        if (Math.abs(distance) < 8) return
+        gestureDirection = distance > 0 ? 'down' : 'up'
+      }
+      // Upward finger movement is normal page scrolling and is never cancelled.
+      if (gestureDirection !== 'down') return
       const target = startTarget instanceof Element ? startTarget : null
       if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
-      if (!canScrollTowardTop(startTarget)) event.preventDefault()
+      if (event.cancelable && !canScrollTowardTop(startTarget)) event.preventDefault()
     }
 
     const resetTouch = () => {
       startY = null
       startTarget = null
+      gestureDirection = null
     }
 
     document.addEventListener('touchstart', onTouchStart, { passive: true, capture: true })

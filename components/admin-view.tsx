@@ -35,8 +35,8 @@ type AdminReport = {
   details: string
   status: 'open' | 'reviewed' | 'dismissed'
   created_at: string
-  reporter: { username: string; name: string } | null
-  reportedUser: { username: string; name: string } | null
+  reporter: { id: string; username: string; name: string } | null
+  reportedUser: { id: string; username: string; name: string; image: string | null } | null
 }
 
 type AdminConversation = {
@@ -86,6 +86,7 @@ export function AdminView({ currentUserId }: Props) {
   const [banReason, setBanReason] = useState('')
   const [reports, setReports] = useState<AdminReport[]>([])
   const [selectedReportId, setSelectedReportId] = useState<number | null>(null)
+  const [loadingReportMessages, setLoadingReportMessages] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -359,13 +360,44 @@ export function AdminView({ currentUserId }: Props) {
     setSelectedReportId(report.id)
     setSelectedConversation(report.conversation_id)
     setMessages([])
-    if (report.conversation_id === null) return
+    setError(null)
+    if (report.conversation_id === null) {
+      setLoadingReportMessages(false)
+      return
+    }
+    setLoadingReportMessages(true)
     try {
       const result = await edgeRequest<{ messages: AdminMessage[] }>({ action: 'admin-get-messages', conversationId: report.conversation_id })
       setMessages(result.messages)
     } catch {
       setError(t.errors.GENERIC)
+    } finally {
+      setLoadingReportMessages(false)
     }
+  }
+
+  async function openReportedAccount(report: AdminReport) {
+    if (!report.reported_user_id) return
+    setSection('users')
+    setError(null)
+    let user = users.find((item) => item.id === report.reported_user_id)
+    if (!user) {
+      try {
+        const updatedUsers = await loadUsers()
+        user = updatedUsers.find((item) => item.id === report.reported_user_id)
+      } catch {
+        setError(t.errors.GENERIC)
+        return
+      }
+    }
+    if (user) selectUser(user)
+    else setError(t.admin.reportAccountUnavailable)
+  }
+
+  async function openReportedConversation(report: AdminReport) {
+    if (report.conversation_id === null) return
+    setSection('conversations')
+    await selectConversation(report.conversation_id)
   }
 
   async function updateReportStatus(report: AdminReport, status: 'reviewed' | 'dismissed') {
@@ -526,16 +558,19 @@ export function AdminView({ currentUserId }: Props) {
                   <div className="rounded-xl border p-4">
                     <p className="text-xs text-muted-foreground">{t.admin.reportBy}: {selectedReport.reporter?.name || selectedReport.reporter?.username || '—'}</p>
                     <p className="mt-1 text-sm">{t.admin.reportPerson}: {selectedReport.reportedUser?.name || selectedReport.reportedUser?.username || '—'}</p>
+                    {selectedReport.reportedUser?.username && <p className="text-xs text-muted-foreground" dir="ltr">@{selectedReport.reportedUser.username}</p>}
                     {selectedReport.conversation_id && <p className="text-sm">{t.admin.reportConversation}: #{selectedReport.conversation_id}</p>}
                     <p className="mt-3 text-xs font-semibold text-muted-foreground">{t.admin.reportReason}</p>
                     <p className="whitespace-pre-wrap text-sm">{selectedReport.details}</p>
                     <div className="mt-3 flex flex-wrap gap-2">
+                      {selectedReport.reported_user_id && <Button type="button" size="sm" variant="secondary" onClick={() => void openReportedAccount(selectedReport)}>{t.admin.openReportedAccount}</Button>}
+                      {selectedReport.conversation_id !== null && <Button type="button" size="sm" variant="secondary" onClick={() => void openReportedConversation(selectedReport)}>{t.admin.openReportedConversation}</Button>}
                       {selectedReport.status !== 'reviewed' && <Button type="button" size="sm" onClick={() => void updateReportStatus(selectedReport, 'reviewed')}>{t.admin.markReviewed}</Button>}
                       {selectedReport.status !== 'dismissed' && <Button type="button" size="sm" variant="secondary" onClick={() => void updateReportStatus(selectedReport, 'dismissed')}>{t.admin.dismissReport}</Button>}
                     </div>
                   </div>
                   {selectedReport.conversation_id !== null && (
-                    messages.length === 0 ? <p className="text-center text-sm text-muted-foreground">{t.admin.noMessages}</p> : (
+                    loadingReportMessages ? <p role="status" className="text-center text-sm text-muted-foreground">{t.admin.loadingReportMessages}</p> : messages.length === 0 ? <p className="text-center text-sm text-muted-foreground">{t.admin.noMessages}</p> : (
                       <ol className="flex flex-col gap-2">
                         {messages.map((message) => <li key={message.id} className="rounded-xl border bg-card p-3"><p className="mb-1 text-[11px] text-muted-foreground" dir="ltr">{message.senderId.slice(0, 8)} · {new Date(message.createdAt).toLocaleString(locale)}</p><p className="break-words text-sm">{message.deletedAt ? t.chat.deletedMessage : message.body || message.mediaName || message.messageType}</p></li>)}
                       </ol>
