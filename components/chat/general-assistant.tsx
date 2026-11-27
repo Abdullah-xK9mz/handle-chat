@@ -177,16 +177,6 @@ function hasUnclosedCodeFence(text: string) {
   return (text.match(/```/g)?.length ?? 0) % 2 === 1
 }
 
-function queueMessage(data: unknown) {
-  const models = (data as { data?: Array<{ id?: string; x_horde?: { queued?: number | null; workers?: number } }> })?.data
-  if (!Array.isArray(models)) return null
-  const selected = models.filter((model) => typeof model.id === 'string' && HORDE_MODELS.includes(model.id))
-  if (!selected.length) return null
-  const queued = selected.reduce((sum, model) => sum + (typeof model.x_horde?.queued === 'number' ? model.x_horde.queued : 0), 0)
-  const workers = selected.reduce((sum, model) => sum + (typeof model.x_horde?.workers === 'number' ? model.x_horde.workers : 0), 0)
-  return { queued, workers }
-}
-
 function fitHordeHistory(history: HordeChatMessage[]) {
   let remaining = MAX_HORDE_HISTORY_CHARACTERS
   const recent: HordeChatMessage[] = []
@@ -563,7 +553,6 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
   const [savedChatsOpen, setSavedChatsOpen] = useState(false)
   const [copiedCodeKey, setCopiedCodeKey] = useState<string | null>(null)
   const [aiStatusIndex, setAiStatusIndex] = useState(0)
-  const [queueInfo, setQueueInfo] = useState<{ queued: number; workers: number } | null>(null)
   const [speechSupported, setSpeechSupported] = useState(false)
   const [recordingSpeech, setRecordingSpeech] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -644,30 +633,10 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
   useEffect(() => {
     if (!busy) {
       setAiStatusIndex(0)
-      setQueueInfo(null)
       return
     }
     const statusTimer = window.setInterval(() => setAiStatusIndex((index) => (index + 1) % 4), 3000)
-    let cancelled = false
-    const refreshQueue = async () => {
-      try {
-        const response = await fetch('https://oai.aihorde.net/v1/models', {
-          headers: { Authorization: `Bearer ${HORDE_GUEST_KEY}` },
-        })
-        if (!response.ok) return
-        const result = queueMessage(await response.json())
-        if (!cancelled) setQueueInfo(result)
-      } catch {
-        // Queue metadata is optional; the live status remains useful without it.
-      }
-    }
-    void refreshQueue()
-    const queueTimer = window.setInterval(() => { void refreshQueue() }, 12_000)
-    return () => {
-      cancelled = true
-      window.clearInterval(statusTimer)
-      window.clearInterval(queueTimer)
-    }
+    return () => window.clearInterval(statusTimer)
   }, [busy])
 
   useEffect(() => () => {
@@ -1102,7 +1071,6 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
     if (clearDraft) setDraft('')
     setHistoryError(false)
     setSaveError(false)
-    setQueueInfo(null)
     setAiStatusIndex(0)
     const exchangeUserId = retryExchange ? String(retryExchange.userMessage.client_id ?? retryExchange.userMessage.id) : crypto.randomUUID()
     const answerId = retryExchange?.answerId ?? crypto.randomUUID()
@@ -1161,7 +1129,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
         try {
           await saveExchangeToDatabase(exchangeUserId, answerId, question, answer, selectedReply)
         } catch {
-          setSaveError(true)
+          // Keep the received answer without showing the old save warning.
         }
       }
     } catch {
@@ -1342,7 +1310,6 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
                     <div role="status" className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
                       <span aria-hidden="true" className="size-1.5 animate-pulse rounded-full bg-primary" />
                       <span>{t.chat.ai.waitingStatuses[aiStatusIndex] ?? t.chat.ai.thinking}</span>
-                      {queueInfo && <span className="text-muted-foreground/75">{t.chat.ai.queueStatus(queueInfo.queued, queueInfo.workers)}</span>}
                     </div>
                   )}
                   {message.failed && message.retryQuestion && (
