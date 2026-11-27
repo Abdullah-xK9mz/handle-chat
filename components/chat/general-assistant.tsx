@@ -1,7 +1,7 @@
 'use client'
 
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { ArrowLeft, Copy, Forward, Info, LoaderCircle, MessageCircle, Mic, PanelLeft, Pencil, Pin, Plus, RefreshCw, Reply, Send, Sparkles, Star, Trash2, X } from 'lucide-react'
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react'
+import { ArrowLeft, Copy, Download, Forward, ImagePlus, Info, LoaderCircle, MessageCircle, Mic, PanelLeft, Pencil, Pin, Plus, RefreshCw, Reply, Send, Sparkles, Star, Trash2, X } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -27,11 +27,15 @@ type AiMessage = {
   retryQuestion?: string
   retryModelQuestion?: string
   retryContinuationSourceId?: number | string
+  imageData?: string
+  imageUrl?: string
 }
 
-type HordeChatMessage = { role: 'system' | 'user' | 'assistant'; content: string }
+type HordeContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'auto' } }
+type HordeChatMessage = { role: 'system' | 'user' | 'assistant'; content: string | HordeContentPart[] }
 type HordeChunk = { error?: string | { message?: string; code?: string; type?: string }; choices?: Array<{ delta?: { content?: string | null }; finish_reason?: string | null }> }
 type SavedAiChat = { id: string; title: string; createdAt: string; updatedAt: string; serverHistory?: boolean; customTitle?: boolean }
+type AiImageAttachment = { dataUrl: string; name: string }
 type AiContentSegment = { type: 'text'; text: string } | { type: 'code'; code: string; language: string; incomplete: boolean }
 type SpeechRecognitionResultLike = { isFinal: boolean; [index: number]: { transcript: string } }
 type SpeechRecognitionEventLike = { resultIndex: number; results: ArrayLike<SpeechRecognitionResultLike> }
@@ -48,6 +52,7 @@ type SpeechRecognitionLike = {
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
 
 const HORDE_CHAT_URL = 'https://oai.aihorde.net/v1/chat/completions'
+const HORDE_IMAGE_API_URL = 'https://aihorde.net/api/v2'
 const HORDE_GUEST_KEY = '0000000000'
 const HORDE_MODELS = [
   'koboldcpp/G4-MeroMero-26B-A4B-it-uncensored-heretic',
@@ -57,6 +62,7 @@ const MAX_QUESTION_LENGTH = 2000
 const MAX_ANSWER_LENGTH = 50_000
 const MAX_HORDE_HISTORY_CHARACTERS = 24_000
 const MAX_HORDE_OUTPUT_TOKENS = 16_384
+const HORDE_VISION_MODELS = ['Qwen/Qwen3.8-Flash-Next']
 const HISTORY_IMPORT_BATCH_SIZE = 25
 const HISTORY_IMPORT_BATCH_CHARACTERS = 250_000
 const AI_CONTACT_NAME_PREFIX = 'message.ai-contact-name.v1'
@@ -182,9 +188,27 @@ function fitHordeHistory(history: HordeChatMessage[]) {
   const recent: HordeChatMessage[] = []
   for (let index = history.length - 1; index >= 0 && remaining > 0; index -= 1) {
     const message = history[index]
-    const content = message.content.length > remaining ? message.content.slice(-remaining) : message.content
-    recent.unshift({ ...message, content })
-    remaining -= content.length
+    if (typeof message.content === 'string') {
+      const content = message.content.length > remaining ? message.content.slice(-remaining) : message.content
+      recent.unshift({ ...message, content })
+      remaining -= content.length
+      continue
+    }
+
+    let messageBudget = remaining
+    const content: HordeContentPart[] = []
+    for (const part of message.content) {
+      if (part.type !== 'text') {
+        content.push(part)
+        continue
+      }
+      if (messageBudget <= 0) continue
+      const text = part.text.length > messageBudget ? part.text.slice(-messageBudget) : part.text
+      messageBudget -= text.length
+      if (text) content.push({ ...part, text })
+    }
+    if (content.length) recent.unshift({ ...message, content })
+    remaining = messageBudget
   }
   return recent
 }
@@ -230,15 +254,154 @@ function completeCodeForCopy(messages: AiMessage[], messageIndex: number, segmen
   return stripFenceLines(code)
 }
 
+function codeFileExtension(language: string, code: string) {
+  const normalized = language.trim().toLowerCase().replace(/^\./, '')
+  const extensions: Record<string, string> = {
+    html: 'html', htm: 'html', json: 'json', css: 'css', scss: 'scss', less: 'less',
+    js: 'js', javascript: 'js', jsx: 'jsx', ts: 'ts', typescript: 'ts', tsx: 'tsx',
+    py: 'py', python: 'py', ps1: 'ps1', powershell: 'ps1', sql: 'sql', md: 'md', markdown: 'md',
+    yml: 'yml', yaml: 'yml', xml: 'xml', svg: 'svg', java: 'java', kt: 'kt', kotlin: 'kt',
+    cs: 'cs', csharp: 'cs', c: 'c', cpp: 'cpp', 'c++': 'cpp', h: 'h', go: 'go', rs: 'rs',
+    rust: 'rs', php: 'php', rb: 'rb', ruby: 'rb', sh: 'sh', bash: 'sh', zsh: 'sh',
+    swift: 'swift', dart: 'dart', toml: 'toml', ini: 'ini', dockerfile: 'dockerfile',
+  }
+  if (extensions[normalized]) return extensions[normalized]
+  const trimmed = code.trimStart()
+  if (/^(?:<!doctype\s+html|<html\b)/i.test(trimmed)) return 'html'
+  if (/^[{[]/.test(trimmed)) {
+    try { JSON.parse(code); return 'json' } catch { /* Not JSON */ }
+  }
+  if (/^<svg\b/i.test(trimmed)) return 'svg'
+  if (/^<\?xml\b/i.test(trimmed)) return 'xml'
+  return 'txt'
+}
+
+function downloadCodeFile(language: string, code: string) {
+  const extension = codeFileExtension(language, code)
+  const mimeTypes: Record<string, string> = {
+    html: 'text/html', css: 'text/css', js: 'text/javascript', jsx: 'text/javascript', ts: 'text/typescript',
+    tsx: 'text/typescript', json: 'application/json', svg: 'image/svg+xml', xml: 'application/xml',
+  }
+  const blob = new Blob([code], { type: `${mimeTypes[extension] ?? 'text/plain'};charset=utf-8` })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `message-code.${extension}`
+  document.body.append(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000)
+}
+
+async function prepareImageAttachment(file: File): Promise<AiImageAttachment> {
+  if (!file.type.startsWith('image/') || file.size > 15 * 1024 * 1024) throw new Error('Unsupported image')
+  const sourceUrl = URL.createObjectURL(file)
+  try {
+    const image = new Image()
+    image.src = sourceUrl
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve()
+      image.onerror = () => reject(new Error('Could not decode image'))
+    })
+    const scale = Math.min(1, 1280 / Math.max(image.naturalWidth, image.naturalHeight))
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale))
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale))
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('Canvas is unavailable')
+    context.drawImage(image, 0, 0, canvas.width, canvas.height)
+    return { dataUrl: canvas.toDataURL('image/jpeg', 0.8), name: file.name }
+  } finally {
+    URL.revokeObjectURL(sourceUrl)
+  }
+}
+
+function delayWithSignal(milliseconds: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException('The request was aborted.', 'AbortError'))
+      return
+    }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, milliseconds)
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      reject(new DOMException('The request was aborted.', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+async function generateHordeImage(prompt: string, signal: AbortSignal) {
+  const headers = {
+    apikey: HORDE_GUEST_KEY,
+    'Client-Agent': 'Message:1.0.0:github.com/Abdullah-xK9mz/handle-chat',
+    'Content-Type': 'application/json',
+  }
+  const request = await fetch(`${HORDE_IMAGE_API_URL}/generate/async`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      prompt: prompt.slice(0, MAX_QUESTION_LENGTH),
+      params: { n: 1, width: 512, height: 512, steps: 20, cfg_scale: 7.5, sampler_name: 'k_euler_a' },
+      nsfw: false,
+      censor_nsfw: true,
+      r2: true,
+      allow_downgrade: true,
+    }),
+    signal,
+  })
+  if (!request.ok) throw new Error(`Image generation request failed (${request.status})`)
+  const accepted = await request.json() as { id?: string }
+  if (!accepted.id) throw new Error('Image generation returned no job id')
+
+  const deadline = Date.now() + 5 * 60 * 1000
+  while (Date.now() < deadline) {
+    await delayWithSignal(2_000, signal)
+    const checkResponse = await fetch(`${HORDE_IMAGE_API_URL}/generate/check/${encodeURIComponent(accepted.id)}`, {
+      headers: { apikey: HORDE_GUEST_KEY, 'Client-Agent': headers['Client-Agent'] },
+      signal,
+    })
+    if (!checkResponse.ok) throw new Error(`Image generation check failed (${checkResponse.status})`)
+    const check = await checkResponse.json() as { done?: boolean; faulted?: boolean }
+    if (check.faulted) throw new Error('Image generation worker failed')
+    if (!check.done) continue
+
+    const statusResponse = await fetch(`${HORDE_IMAGE_API_URL}/generate/status/${encodeURIComponent(accepted.id)}`, {
+      headers: { apikey: HORDE_GUEST_KEY, 'Client-Agent': headers['Client-Agent'] },
+      signal,
+    })
+    if (!statusResponse.ok) throw new Error(`Image generation result failed (${statusResponse.status})`)
+    const status = await statusResponse.json() as { generations?: Array<{ img?: string }> }
+    const imageUrl = status.generations?.find((generation) => typeof generation.img === 'string')?.img
+    if (!imageUrl) throw new Error('Image generation returned no image')
+    return imageUrl
+  }
+  throw new Error('Image generation timed out')
+}
+
+function wantsImageGeneration(question: string) {
+  const EnglishImageRequest = /\b(?:generate|create|draw|make|design|produce|paint|illustrate|sketch)\b[^\n.!?]{0,80}\b(?:image|picture|illustration|photo|art|logo|icon|wallpaper|avatar)\b|\b(?:image|picture|illustration|photo|art|logo|icon|wallpaper|avatar)\b[^\n.!?]{0,80}\b(?:generate|create|draw|make|design)\b/i.test(question)
+  const EnglishDrawRequest = /\b(?:draw|paint|illustrate|sketch)\s+(?:me\s+)?(?:an?\s+)?[a-z]/i.test(question)
+  const ArabicImageRequest = /(?:اعمل|أنشئ|انشئ|اصنع|ارسم|صمم|ولّد|ولد)[^\n.!؟]{0,70}(?:صورة|رسمة|تصميم|لوحة|مشهد|شعار|أيقونة)|(?:ارسم|ارسملي|ارسم لي|صمملي|صمم لي)\s*[^.!؟\n]{1,50}/i.test(question)
+  const ArabicWantImage = /(?:عايز|عاوز|أريد|اريد|محتاج|هاتلي|هات لي|وريني)[^\n.!؟]{0,70}(?:صورة|رسمة|تصميم|لوحة|مشهد|شعار|أيقونة)/i.test(question)
+  return EnglishImageRequest || EnglishDrawRequest || ArabicImageRequest || ArabicWantImage
+}
+
 function AiMessageBody({
   message,
   messageIndex,
   messages,
   copiedCodeKey,
   copyCodeLabel,
+  downloadCodeLabel,
   copiedLabel,
   continueLabel,
   onCopyCode,
+  onDownloadCode,
   onContinue,
 }: {
   message: AiMessage
@@ -246,9 +409,11 @@ function AiMessageBody({
   messages: AiMessage[]
   copiedCodeKey: string | null
   copyCodeLabel: string
+  downloadCodeLabel: string
   copiedLabel: string
   continueLabel: string
   onCopyCode: (key: string, text: string) => void
+  onDownloadCode: (language: string, text: string) => void
   onContinue: (message: AiMessage) => void
 }) {
   const inheritedMessage = message.continuesCodeFrom
@@ -281,6 +446,9 @@ function AiMessageBody({
               <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-white/65">{segment.language}</span>
               <button type="button" className="rounded-md px-2 py-1 text-[11px] font-medium text-white/80 hover:bg-white/10 hover:text-white" onClick={() => onCopyCode(key, code)}>
                 {copiedCodeKey === key ? copiedLabel : copyCodeLabel}
+              </button>
+              <button type="button" className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-white/80 hover:bg-white/10 hover:text-white" onClick={() => onDownloadCode(segment.language, code)}>
+                <Download className="size-3" aria-hidden="true" />{downloadCodeLabel}
               </button>
             </div>
             <pre className="max-w-full overflow-x-auto p-3 text-[12px] leading-5"><code className="font-mono">{segment.code}</code></pre>
@@ -336,6 +504,8 @@ function mergeHistory(serverMessages: AiMessage[], localMessages: AiMessage[]) {
       ...message,
       ...(local.codeIncomplete !== undefined ? { codeIncomplete: local.codeIncomplete } : {}),
       ...(local.continuesCodeFrom !== undefined ? { continuesCodeFrom: local.continuesCodeFrom } : {}),
+      ...(local.imageData !== undefined ? { imageData: local.imageData } : {}),
+      ...(local.imageUrl !== undefined ? { imageUrl: local.imageUrl } : {}),
     } : message
   })
   return [...mergedServer, ...uniqueLocal].sort((left, right) => {
@@ -364,6 +534,7 @@ async function streamHordeAnswer(
   onText: (text: string) => void,
   signal: AbortSignal,
   requestedMaxTokens: number,
+  modelsToUse: string[] = HORDE_MODELS,
 ) {
   const retryDelay = (milliseconds: number) => new Promise<void>((resolve, reject) => {
     if (signal.aborted) {
@@ -511,7 +682,7 @@ async function streamHordeAnswer(
     if (signal.aborted) throw new DOMException('The request was aborted.', 'AbortError')
     try {
       // Keep the high-output model after a kudos rejection; rotate on other transient failures.
-      const models = preferAlternateModel ? [...HORDE_MODELS].reverse() : HORDE_MODELS
+      const models = preferAlternateModel ? [...modelsToUse].reverse() : modelsToUse
       return await requestOnce(models, maxTokens)
     } catch (error) {
       if (signal.aborted) throw error
@@ -553,10 +724,13 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
   const [savedChatsOpen, setSavedChatsOpen] = useState(false)
   const [copiedCodeKey, setCopiedCodeKey] = useState<string | null>(null)
   const [aiStatusIndex, setAiStatusIndex] = useState(0)
+  const [aiResponseStarted, setAiResponseStarted] = useState(false)
+  const [attachedImage, setAttachedImage] = useState<AiImageAttachment | null>(null)
   const [speechSupported, setSpeechSupported] = useState(false)
   const [recordingSpeech, setRecordingSpeech] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const controllerRef = useRef<AbortController | null>(null)
+  const imageInputRef = useRef<HTMLInputElement>(null)
   const speechRecognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const copiedCodeTimerRef = useRef<number | null>(null)
   const preserveScrollRef = useRef(false)
@@ -633,9 +807,10 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
   useEffect(() => {
     if (!busy) {
       setAiStatusIndex(0)
+      setAiResponseStarted(false)
       return
     }
-    const statusTimer = window.setInterval(() => setAiStatusIndex((index) => (index + 1) % 4), 3000)
+    const statusTimer = window.setInterval(() => setAiStatusIndex((index) => Math.min(index + 1, 3)), 2000)
     return () => window.clearInterval(statusTimer)
   }, [busy])
 
@@ -883,6 +1058,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
       continuationSource,
       false,
       { userMessage, answerId: String(message.id) },
+      userMessage.imageData,
     )
   }
 
@@ -894,6 +1070,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
     setSavedChats(nextChats)
     setActiveChatId(chat.id)
     setMessages([])
+    setAttachedImage(null)
     setHistoryLoading(false)
     setHasMoreHistory(false)
     setHistoryError(false)
@@ -911,6 +1088,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
     setActiveChatId(chat.id)
     if (!window.matchMedia('(min-width: 768px)').matches) setSavedChatsOpen(false)
     setDraft('')
+    setAttachedImage(null)
     setActionNotice('')
     setSaveError(false)
   }
@@ -1065,36 +1243,50 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
     continuationSource?: AiMessage,
     clearDraft = true,
     retryExchange?: { userMessage: AiMessage; answerId: string },
+    imageData?: string,
   ) {
-    if (!question || historyLoading || busy || question.length > MAX_QUESTION_LENGTH) return
+    if ((!question && !imageData) || historyLoading || busy || question.length > MAX_QUESTION_LENGTH) return
+
+    const savedQuestion = question || t.chat.ai.imageQuestion
 
     if (clearDraft) setDraft('')
     setHistoryError(false)
     setSaveError(false)
     setAiStatusIndex(0)
+    setAiResponseStarted(false)
     const exchangeUserId = retryExchange ? String(retryExchange.userMessage.client_id ?? retryExchange.userMessage.id) : crypto.randomUUID()
     const answerId = retryExchange?.answerId ?? crypto.randomUUID()
     const controller = new AbortController()
     controllerRef.current = controller
     const userMessageIndex = retryExchange ? messages.findIndex((message) => message.id === retryExchange.userMessage.id) : messages.length
-    const previousHistory = (retryExchange ? messages.slice(0, Math.max(0, userMessageIndex)) : messages)
+    const priorMessages = (retryExchange ? messages.slice(0, Math.max(0, userMessageIndex)) : messages)
       .filter((message) => !message.pending && !message.failed && !message.deleted_at)
       .slice(-12)
-      .map((message) => ({ role: message.role, content: message.body }))
+    const recentImageMessages = new Set(priorMessages.filter((message) => message.role === 'user' && message.imageData).slice(-3))
+    const previousHistory = priorMessages.map((message) => ({
+      role: message.role,
+      content: recentImageMessages.has(message)
+        ? [
+            { type: 'text' as const, text: message.body },
+            { type: 'image_url' as const, image_url: { url: message.imageData!, detail: 'high' as const } },
+          ]
+        : message.body,
+    }))
     const userMessage: AiMessage = retryExchange?.userMessage ?? {
       id: exchangeUserId,
       client_id: exchangeUserId,
       role: 'user',
-      body: question,
+      body: savedQuestion,
       created_at: new Date().toISOString(),
       reply_to_id: selectedReply?.id ?? null,
       reply_body: selectedReply?.body ?? null,
+      ...(imageData ? { imageData } : {}),
     }
     const pendingAnswer: AiMessage = { id: answerId, client_id: answerId, role: 'assistant', body: '', pending: true }
     const nextMessages = retryExchange
       ? messages.map((message) => message.id === answerId ? pendingAnswer : message)
       : [...messages, userMessage, pendingAnswer]
-    updateChatMetadata(question)
+    updateChatMetadata(savedQuestion)
 
     setMessages(nextMessages)
     writeLocalHistory(historyKey, nextMessages)
@@ -1102,15 +1294,36 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
     setBusy(true)
 
     try {
-      const answerResult = await streamHordeAnswer(
-        [...previousHistory, { role: 'user', content: modelQuestion }],
-        new Date().toLocaleString('ar-EG', { dateStyle: 'full', timeStyle: 'short' }),
-        (body) => setMessages((current) => current.map((message) => message.id === answerId ? { ...message, body } : message)),
-        controller.signal,
-        chooseHordeOutputTokens(question, modelQuestion),
-      )
-      const answer = answerResult.text
-      const codeIncomplete = isCodeReply(answer) && (hasUnclosedCodeFence(answer) || answerResult.stoppedAtTokenLimit)
+      const generateImage = !imageData && wantsImageGeneration(question)
+      let answer = ''
+      let generatedImageUrl: string | undefined
+      let codeIncomplete = false
+      if (generateImage) {
+        generatedImageUrl = await generateHordeImage(question, controller.signal)
+        answer = t.chat.ai.imageGenerated
+        setAiResponseStarted(true)
+      } else {
+        const userContent: string | HordeContentPart[] = imageData
+          ? [
+              { type: 'text', text: modelQuestion || t.chat.ai.imageQuestion },
+              { type: 'image_url', image_url: { url: imageData, detail: 'high' } },
+            ]
+          : modelQuestion
+        const answerResult = await streamHordeAnswer(
+          [...previousHistory, { role: 'user', content: userContent }],
+          new Date().toLocaleString('ar-EG', { dateStyle: 'full', timeStyle: 'short' }),
+          (body) => {
+            if (body) setAiResponseStarted(true)
+            else setAiResponseStarted(false)
+            setMessages((current) => current.map((message) => message.id === answerId ? { ...message, body } : message))
+          },
+          controller.signal,
+          chooseHordeOutputTokens(savedQuestion, modelQuestion),
+          imageData ? HORDE_VISION_MODELS : HORDE_MODELS,
+        )
+        answer = answerResult.text
+        codeIncomplete = isCodeReply(answer) && (hasUnclosedCodeFence(answer) || answerResult.stoppedAtTokenLimit)
+      }
       const assistantMessage: AiMessage = {
         id: answerId,
         client_id: answerId,
@@ -1118,6 +1331,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
         body: answer,
         created_at: new Date().toISOString(),
         codeIncomplete,
+        ...(generatedImageUrl ? { imageUrl: generatedImageUrl } : {}),
         ...(continuationSource ? { continuesCodeFrom: continuationSource.id } : {}),
       }
       const completedMessages = retryExchange
@@ -1127,7 +1341,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
       setMessages((current) => current.map((message) => message.id === answerId ? assistantMessage : message))
       if (activeChat?.serverHistory) {
         try {
-          await saveExchangeToDatabase(exchangeUserId, answerId, question, answer, selectedReply)
+          await saveExchangeToDatabase(exchangeUserId, answerId, savedQuestion, answer, selectedReply)
         } catch {
           // Keep the received answer without showing the old save warning.
         }
@@ -1152,14 +1366,29 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
     }
   }
 
+  async function handleImageSelection(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (!file) return
+    try {
+      setAttachedImage(await prepareImageAttachment(file))
+      setActionNotice('')
+    } catch {
+      setActionNotice(t.chat.ai.imageReadError)
+    }
+  }
+
   async function sendQuestion(event?: FormEvent) {
     event?.preventDefault()
     const question = draft.trim()
-    if (!question) return
+    const imageData = attachedImage?.dataUrl
+    if (!question && !imageData) return
     const selectedReply = replyTo
     const replyReference = selectedReply?.body ? `${t.chat.ai.replyContext}: ${selectedReply.body}\n\n` : ''
+    const imageQuestion = question || t.chat.ai.imageQuestion
+    setAttachedImage(null)
     setReplyTo(null)
-    await submitQuestion(question, `${replyReference}${question}`, selectedReply)
+    await submitQuestion(imageQuestion, `${replyReference}${question || t.chat.ai.imageQuestion}`, selectedReply, undefined, true, undefined, imageData)
   }
 
   async function continueCode(message: AiMessage) {
@@ -1290,6 +1519,8 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
                   message.failed && 'border-destructive/40 text-destructive',
                   message.deleted_at && 'italic text-muted-foreground',
                 )}>
+                  {!message.deleted_at && message.imageData && <img src={message.imageData} alt={t.chat.ai.attachedImage} className="mb-2 max-h-72 max-w-full rounded-xl object-contain" />}
+                  {!message.deleted_at && message.imageUrl && <img src={message.imageUrl} alt={t.chat.ai.generatedImage} className="mb-2 max-h-[28rem] max-w-full rounded-xl object-contain" />}
                   {message.reply_body && <div className="mb-1 rounded-lg border-s-2 border-primary/70 bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground">{message.reply_body}</div>}
                   {message.deleted_at
                     ? t.chat.deletedMessage
@@ -1300,13 +1531,15 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
                           messages={messages}
                           copiedCodeKey={copiedCodeKey}
                           copyCodeLabel={t.chat.ai.codeCopy}
+                          downloadCodeLabel={t.chat.ai.codeDownload}
                           copiedLabel={t.chat.ai.codeCopied}
                           continueLabel={t.chat.ai.continueCode}
                           onCopyCode={(key, code) => void copyCode(key, code)}
+                          onDownloadCode={(language, code) => downloadCodeFile(language, code)}
                           onContinue={(incompleteMessage) => void continueCode(incompleteMessage)}
                         />
                       : message.body ? <p className="whitespace-pre-wrap">{message.body}</p> : null}
-                  {message.pending && (
+                  {message.pending && !aiResponseStarted && (
                     <div role="status" className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
                       <span aria-hidden="true" className="size-1.5 animate-pulse rounded-full bg-primary" />
                       <span>{t.chat.ai.waitingStatuses[aiStatusIndex] ?? t.chat.ai.thinking}</span>
@@ -1339,13 +1572,18 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
       </div>
 
       <form onSubmit={(event) => void sendQuestion(event)} className="flex shrink-0 flex-col gap-2 border-t bg-background px-3 py-2.5 pb-[max(0.65rem,env(safe-area-inset-bottom))] md:px-5 md:pb-3">
+        <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={(event) => void handleImageSelection(event)} />
         {replyTo && <div className="flex items-center gap-2 rounded-xl border-s-2 border-primary bg-muted/60 px-3 py-2 text-xs"><Reply className="size-4 shrink-0 text-primary" /><span className="min-w-0 flex-1 truncate text-muted-foreground">{t.chat.ai.replyContext}: {replyTo.deleted_at ? t.chat.deletedMessage : replyTo.body}</span><button type="button" onClick={() => setReplyTo(null)} className="rounded-full p-1 hover:bg-background" aria-label={t.chat.cancel}><X className="size-4" /></button></div>}
+        {attachedImage && <div className="flex items-center gap-2 self-start rounded-xl border bg-muted/50 p-2"><img src={attachedImage.dataUrl} alt={t.chat.ai.attachedImage} className="size-14 rounded-lg object-cover" /><span className="max-w-48 truncate text-xs text-muted-foreground">{attachedImage.name}</span><button type="button" className="rounded-full p-1 hover:bg-background" onClick={() => setAttachedImage(null)} aria-label={t.chat.cancel}><X className="size-4" /></button></div>}
         <div className="flex items-end gap-2">
           {speechSupported && (
             <Button type="button" variant={recordingSpeech ? 'destructive' : 'secondary'} size="icon" className={cn('size-11 shrink-0 rounded-full', recordingSpeech && 'animate-pulse ring-2 ring-red-400/40')} onClick={toggleSpeechInput} disabled={historyLoading || busy} aria-label={recordingSpeech ? t.chat.ai.stopVoiceInput : t.chat.ai.voiceInput} aria-pressed={recordingSpeech} title={recordingSpeech ? t.chat.ai.stopVoiceInput : t.chat.ai.voiceInput}>
               <Mic className="size-4" />
             </Button>
           )}
+          <Button type="button" variant="secondary" size="icon" className="size-11 shrink-0 rounded-full" onClick={() => imageInputRef.current?.click()} disabled={historyLoading || busy} aria-label={t.chat.ai.imageUpload} title={t.chat.ai.imageUpload}>
+            <ImagePlus className="size-4" />
+          </Button>
           <textarea
             value={draft}
             onChange={(event) => setDraft(event.target.value.slice(0, MAX_QUESTION_LENGTH))}
@@ -1362,8 +1600,8 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
               <X className="size-4" />
             </Button>
           ) : (
-            <Button type="submit" size="icon" className="size-11 shrink-0 rounded-full" disabled={historyLoading || !draft.trim()} aria-label={t.chat.ai.send} title={t.chat.ai.send}>
-              <Send className="size-4 rtl:rotate-180" />
+            <Button type="submit" size="icon" className="size-11 shrink-0 rounded-full" disabled={historyLoading || (!draft.trim() && !attachedImage)} aria-label={t.chat.ai.send} title={t.chat.ai.send}>
+              <Send className="size-4 -rotate-45" />
             </Button>
           )}
         </div>
