@@ -7,14 +7,15 @@ import { AtSign, LockKeyhole, MessageCircle, UserRound } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { createAccount, edgeRequest, getSession, signInWithUsername, SupabaseError } from '@/lib/supabase'
 import { USERNAME_PATTERN, normalizeUsername } from '@/lib/username'
+import { readStoredValue, removeStoredValue } from '@/lib/safe-storage'
 import { useI18n } from './i18n-provider'
 import { LanguageToggle } from './language-toggle'
 
 type Mode = 'sign-in' | 'sign-up'
 
 function consumePendingDeepLink() {
-  const pending = localStorage.getItem('handle.pending.deepLink.v1')
-  localStorage.removeItem('handle.pending.deepLink.v1')
+  const pending = readStoredValue('handle.pending.deepLink.v1')
+  removeStoredValue('handle.pending.deepLink.v1')
   if (!pending) return null
 
   const params = new URLSearchParams(pending)

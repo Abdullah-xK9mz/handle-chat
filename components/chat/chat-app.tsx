@@ -10,6 +10,7 @@ import { chatRequest, createRealtimeClient, edgeRequest } from '@/lib/supabase'
 import { getNativeApp } from '@/lib/native-app'
 import { CONTACT_NAMES_CHANGED, getLocalContactNames } from '@/lib/local-contact-names'
 import { NOTIFICATION_PREVIEW_KEY, readBooleanPreference } from '@/lib/chat-preferences'
+import { readStoredValue } from '@/lib/safe-storage'
 import { ConversationView } from './conversation-view'
 import { GeneralAssistant } from './general-assistant'
 import { Sidebar, type SidebarSection } from './sidebar'
@@ -203,7 +204,7 @@ export function ChatApp({ currentUser }: { currentUser: CurrentUser }) {
     const browserNotificationsAvailable =
       typeof Notification !== 'undefined' && Notification.permission === 'granted'
     if (previous && (nativeApp?.notify || browserNotificationsAvailable)) {
-      const enabled = localStorage.getItem('handle.notifications.enabled.v1') === 'true'
+      const enabled = readStoredValue('handle.notifications.enabled.v1') === 'true'
       if (enabled && document.visibilityState === 'hidden') {
         for (const conversation of conversations) {
           const before = previous.get(conversation.id)

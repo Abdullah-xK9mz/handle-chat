@@ -1,4 +1,5 @@
 import { normalizeUsername, placeholderEmail } from './username'
+import { readStoredValue, removeStoredValue, writeStoredValue } from './safe-storage'
 
 export const SUPABASE_URL = 'https://xecdfgxbcmltubkwlbah.supabase.co'
 export const SUPABASE_PUBLISHABLE_KEY =
@@ -82,12 +83,12 @@ export class SupabaseError extends Error {
 }
 
 function getDeviceId() {
-  const existing = localStorage.getItem(DEVICE_KEY)
+  const existing = readStoredValue(DEVICE_KEY)
   if (existing && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(existing)) {
     return existing
   }
   const id = crypto.randomUUID()
-  localStorage.setItem(DEVICE_KEY, id)
+  writeStoredValue(DEVICE_KEY, id)
   return id
 }
 
@@ -98,7 +99,7 @@ function isAuthPage(pathname: string) {
 
 function redirectToSignIn() {
   if (typeof window === 'undefined') return
-  localStorage.removeItem(SESSION_KEY)
+  removeStoredValue(SESSION_KEY)
   if (!isAuthPage(window.location.pathname)) window.location.replace(appPath('/sign-in'))
 }
 
@@ -112,7 +113,7 @@ function redirectToRestriction(result: Record<string, unknown>) {
 
 function readSession(): Session | null {
   try {
-    const raw = localStorage.getItem(SESSION_KEY)
+    const raw = readStoredValue(SESSION_KEY)
     if (!raw) return null
     const session = JSON.parse(raw) as Partial<Session>
     if (
@@ -120,7 +121,7 @@ function readSession(): Session | null {
       typeof session.refresh_token !== 'string' ||
       !session.user?.id
     ) {
-      localStorage.removeItem(SESSION_KEY)
+      removeStoredValue(SESSION_KEY)
       return null
     }
     return {
@@ -131,7 +132,7 @@ function readSession(): Session | null {
           : Math.floor(Date.now() / 1000) + 3600,
     } as Session
   } catch {
-    localStorage.removeItem(SESSION_KEY)
+    removeStoredValue(SESSION_KEY)
     return null
   }
 }
@@ -140,10 +141,7 @@ function saveSession(session: Omit<Session, 'expires_at'> & { expires_at?: numbe
   const expiresAt =
     session.expires_at ??
     Math.floor(Date.now() / 1000) + (session.expires_in ?? 3600)
-  localStorage.setItem(
-    SESSION_KEY,
-    JSON.stringify({ ...session, expires_at: expiresAt }),
-  )
+  writeStoredValue(SESSION_KEY, JSON.stringify({ ...session, expires_at: expiresAt }))
 }
 
 let refreshInFlight: Promise<Session | null> | null = null
@@ -164,7 +162,7 @@ async function refreshSession(session: Session): Promise<Session | null> {
     if (response.status >= 500) {
       throw new SupabaseError('SESSION_REFRESH_FAILED', response.status)
     }
-    localStorage.removeItem(SESSION_KEY)
+    removeStoredValue(SESSION_KEY)
     return null
   }
   const renewed = await response.json()
@@ -273,7 +271,7 @@ export async function signOut() {
   } catch {
     // Sign out locally even when the network is unavailable.
   } finally {
-    localStorage.removeItem(SESSION_KEY)
+    removeStoredValue(SESSION_KEY)
   }
 }
 

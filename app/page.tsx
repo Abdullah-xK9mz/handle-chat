@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { ChatApp } from '@/components/chat/chat-app'
 import { edgeRequest, SupabaseError, type Profile } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
+import { writeStoredValue } from '@/lib/safe-storage'
 
 export default function HomePage() {
   const router = useRouter()
@@ -29,7 +30,7 @@ export default function HomePage() {
           if (chat) pending.set('chat', chat)
           if (groupInvite) pending.set('groupInvite', groupInvite)
           const pendingValue = pending.toString()
-          if (pendingValue) localStorage.setItem('handle.pending.deepLink.v1', pendingValue)
+          if (pendingValue) writeStoredValue('handle.pending.deepLink.v1', pendingValue)
           router.replace('/sign-in')
         }
       })

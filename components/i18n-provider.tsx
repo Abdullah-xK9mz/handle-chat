@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useState } from 'react'
 import { dictionaries, type Dictionary, type Locale } from '@/lib/i18n/dictionaries'
+import { readStoredValue, writeStoredValue } from '@/lib/safe-storage'
 
 type I18nValue = {
   locale: Locale
@@ -23,7 +24,7 @@ export function I18nProvider({
   const [locale, setLocale] = useState<Locale>('en')
 
   useEffect(() => {
-    const saved = window.localStorage.getItem('handle-locale')
+    const saved = readStoredValue('handle-locale')
     if (saved === 'ar' || saved === 'en') setLocale(saved)
   }, [])
 
@@ -33,13 +34,13 @@ export function I18nProvider({
   }, [locale])
 
   useEffect(() => {
-    const size = window.localStorage.getItem('handle.chat.message-size.v1')
+    const size = readStoredValue('handle.chat.message-size.v1')
     document.documentElement.dataset.chatMessageSize =
       size === 'small' || size === 'large' ? size : 'normal'
   }, [])
 
   function updateLocale(nextLocale: Locale) {
-    window.localStorage.setItem('handle-locale', nextLocale)
+    writeStoredValue('handle-locale', nextLocale)
     setLocale(nextLocale)
   }
 

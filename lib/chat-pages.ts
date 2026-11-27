@@ -29,7 +29,5 @@ export function closeChatPage(page: ChatPage) {
   const current = window.history.state as ChatHistoryState | null
   if (current?.handleChatPage === page) {
     window.history.back()
-    return
   }
-  window.history.back()
 }

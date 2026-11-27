@@ -23,6 +23,7 @@ import { errorMessage } from '@/lib/i18n/dictionaries'
 import { closeChatPage, pushChatPage } from '@/lib/chat-pages'
 import { NOTIFICATION_PREVIEW_KEY, readBooleanPreference, SEND_ON_ENTER_KEY, writeBooleanPreference } from '@/lib/chat-preferences'
 import { getNativeApp, pickNativeFileAsFile } from '@/lib/native-app'
+import { readStoredValue, writeStoredValue } from '@/lib/safe-storage'
 
 type KnownDevice = {
   deviceId: string
@@ -166,7 +167,7 @@ export function SettingsView({
   const archiveFileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    setNotificationsEnabled(localStorage.getItem('handle.notifications.enabled.v1') === 'true')
+    setNotificationsEnabled(readStoredValue('handle.notifications.enabled.v1') === 'true')
   }, [])
 
   useEffect(() => {
@@ -220,7 +221,7 @@ export function SettingsView({
       .then((result) => { if (!cancelled) setDevices(result.devices) })
       .catch(() => { if (!cancelled) setDevicesError(true) })
       .finally(() => { if (!cancelled) setDevicesLoading(false) })
-    const storedSize = localStorage.getItem('handle.chat.message-size.v1')
+    const storedSize = readStoredValue('handle.chat.message-size.v1')
     if (storedSize === 'small' || storedSize === 'large') setMessageTextSize(storedSize)
     setSendOnEnter(readBooleanPreference(SEND_ON_ENTER_KEY, true))
     setNotificationPreview(readBooleanPreference(NOTIFICATION_PREVIEW_KEY, true))
@@ -293,7 +294,7 @@ export function SettingsView({
   async function toggleNotifications() {
     setError(null)
     if (notificationsEnabled) {
-      localStorage.setItem('handle.notifications.enabled.v1', 'false')
+      writeStoredValue('handle.notifications.enabled.v1', 'false')
       setNotificationsEnabled(false)
       return
     }
@@ -306,7 +307,7 @@ export function SettingsView({
           setError(t.settings.notificationsDenied)
           return
         }
-        localStorage.setItem('handle.notifications.enabled.v1', 'true')
+        writeStoredValue('handle.notifications.enabled.v1', 'true')
         setNotificationsEnabled(true)
         return
       } catch {
@@ -330,7 +331,7 @@ export function SettingsView({
       setError(t.settings.notificationsDenied)
       return
     }
-    localStorage.setItem('handle.notifications.enabled.v1', 'true')
+    writeStoredValue('handle.notifications.enabled.v1', 'true')
     setNotificationsEnabled(true)
   }
 
@@ -385,7 +386,7 @@ export function SettingsView({
   function changeMessageTextSize(value: string) {
     if (value !== 'small' && value !== 'normal' && value !== 'large') return
     setMessageTextSize(value)
-    localStorage.setItem('handle.chat.message-size.v1', value)
+    writeStoredValue('handle.chat.message-size.v1', value)
     document.documentElement.dataset.chatMessageSize = value
   }
 
