@@ -317,6 +317,48 @@ async function prepareImageAttachment(file: File): Promise<AiImageAttachment> {
   }
 }
 
+type CropRect = { x: number; y: number; width: number; height: number }
+type CropHandle = 'n' | 's' | 'e' | 'w' | 'nw' | 'ne' | 'sw' | 'se'
+type ImageEditInteraction =
+  | { kind: 'draw' }
+  | { kind: 'crop-move' | 'crop-resize'; handle?: CropHandle; startX: number; startY: number; initial: CropRect }
+
+function drawImageText(canvas: HTMLCanvasElement, value: string, point: { x: number; y: number }, color: string, fontSize: number) {
+  const context = canvas.getContext('2d')
+  const text = value.trim()
+  if (!context || !text) return
+  const isArabic = /[\u0600-\u06ff]/.test(text)
+  const maxWidth = canvas.width * 0.82
+  const lineHeight = fontSize * 1.25
+  context.save()
+  context.font = `600 ${fontSize}px sans-serif`
+  context.fillStyle = color
+  context.shadowColor = 'rgba(0,0,0,.85)'
+  context.shadowBlur = Math.max(3, canvas.width / 240)
+  context.textAlign = isArabic ? 'right' : 'left'
+  context.textBaseline = 'top'
+  context.direction = isArabic ? 'rtl' : 'ltr'
+  const lines = text.split(/\r?\n/).flatMap((paragraph) => {
+    const words = paragraph.split(/\s+/).filter(Boolean)
+    if (!words.length) return ['']
+    const wrapped: string[] = []
+    let line = ''
+    for (const word of words) {
+      const candidate = line ? `${line} ${word}` : word
+      if (line && context.measureText(candidate).width > maxWidth) {
+        wrapped.push(line)
+        line = word
+      } else line = candidate
+    }
+    wrapped.push(line)
+    return wrapped
+  })
+  const x = isArabic ? Math.min(canvas.width, Math.max(maxWidth, point.x)) : Math.min(canvas.width - maxWidth, Math.max(0, point.x))
+  const y = Math.min(Math.max(0, point.y), Math.max(0, canvas.height - lines.length * lineHeight))
+  lines.forEach((line, index) => context.fillText(line, x, y + index * lineHeight, maxWidth))
+  context.restore()
+}
+
 function ImageEditorDialog({
   attachment,
   labels,
@@ -324,16 +366,18 @@ function ImageEditorDialog({
   onSave,
 }: {
   attachment: AiImageAttachment
-  labels: { title: string; crop: string; draw: string; text: string; textPlaceholder: string; textHint: string; cropHint: string; applyCrop: string; save: string; cancel: string }
+  labels: { title: string; crop: string; draw: string; text: string; textPlaceholder: string; textHint: string; cropHint: string; applyCrop: string; applyText: string; fontSize: string; save: string; cancel: string }
   onCancel: () => void
   onSave: (attachment: AiImageAttachment) => void
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const interactionRef = useRef<{ mode: 'crop' | 'draw'; x: number; y: number } | null>(null)
+  const interactionRef = useRef<ImageEditInteraction | null>(null)
   const [mode, setMode] = useState<'crop' | 'draw' | 'text'>('crop')
-  const [selection, setSelection] = useState<{ x: number; y: number; width: number; height: number } | null>(null)
+  const [cropRect, setCropRect] = useState<CropRect | null>(null)
+  const [textAnchor, setTextAnchor] = useState<{ x: number; y: number } | null>(null)
   const [text, setText] = useState('')
   const [color, setColor] = useState('#ff3b30')
+  const [fontSize, setFontSize] = useState(44)
   const [canvasReady, setCanvasReady] = useState(false)
 
   useEffect(() => {
@@ -345,33 +389,41 @@ function ImageEditorDialog({
       canvas.width = image.naturalWidth
       canvas.height = image.naturalHeight
       context.drawImage(image, 0, 0)
+      setCropRect({ x: 0, y: 0, width: canvas.width, height: canvas.height })
       setCanvasReady(true)
     }
     image.src = attachment.dataUrl
   }, [attachment.dataUrl])
 
-  function pointOnCanvas(event: ReactPointerEvent<HTMLCanvasElement>) {
-    const canvas = event.currentTarget
-    const bounds = canvas.getBoundingClientRect()
+  function pointOnCanvas(event: ReactPointerEvent<HTMLElement>) {
+    const canvas = canvasRef.current
+    const bounds = canvas?.getBoundingClientRect()
+    if (!canvas || !bounds) return { x: 0, y: 0 }
     return {
       x: Math.max(0, Math.min(canvas.width, (event.clientX - bounds.left) * canvas.width / bounds.width)),
       y: Math.max(0, Math.min(canvas.height, (event.clientY - bounds.top) * canvas.height / bounds.height)),
     }
   }
 
-  function handlePointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
-    const canvas = event.currentTarget
-    const context = canvas.getContext('2d')
-    if (!context) return
+  function handleStagePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    const canvas = canvasRef.current
+    if (!canvas || !canvasReady) return
     const point = pointOnCanvas(event)
-    canvas.setPointerCapture(event.pointerId)
     if (mode === 'crop') {
-      interactionRef.current = { mode, ...point }
-      setSelection({ ...point, width: 0, height: 0 })
+      const target = event.target instanceof HTMLElement ? event.target : null
+      const handle = target?.closest<HTMLElement>('[data-crop-handle]')?.dataset.cropHandle as CropHandle | undefined
+      const movingCrop = Boolean(target?.closest('[data-crop-move]'))
+      if ((!handle && !movingCrop) || !cropRect) return
+      interactionRef.current = { kind: handle ? 'crop-resize' : 'crop-move', handle, startX: point.x, startY: point.y, initial: cropRect }
+      event.currentTarget.setPointerCapture(event.pointerId)
       return
     }
+    if (event.target !== canvas) return
     if (mode === 'draw') {
-      interactionRef.current = { mode, ...point }
+      const context = canvas.getContext('2d')
+      if (!context) return
+      interactionRef.current = { kind: 'draw' }
+      event.currentTarget.setPointerCapture(event.pointerId)
       context.beginPath()
       context.moveTo(point.x, point.y)
       context.lineCap = 'round'
@@ -380,32 +432,45 @@ function ImageEditorDialog({
       context.strokeStyle = color
       return
     }
-    const value = text.trim()
-    if (!value) return
-    const isArabic = /[\u0600-\u06ff]/.test(value)
-    context.save()
-    context.font = `600 ${Math.max(22, canvas.width / 28)}px sans-serif`
-    context.fillStyle = color
-    context.shadowColor = 'rgba(0,0,0,.8)'
-    context.shadowBlur = Math.max(3, canvas.width / 240)
-    context.textAlign = isArabic ? 'right' : 'left'
-    context.direction = isArabic ? 'rtl' : 'ltr'
-    context.fillText(value, point.x, point.y, canvas.width * 0.8)
-    context.restore()
+    setTextAnchor(point)
+    setText('')
   }
 
-  function handlePointerMove(event: ReactPointerEvent<HTMLCanvasElement>) {
+  function handleStagePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const canvas = canvasRef.current
     const interaction = interactionRef.current
-    if (!interaction) return
+    if (!canvas || !interaction) return
     const point = pointOnCanvas(event)
-    if (interaction.mode === 'crop') {
-      setSelection({ x: Math.min(interaction.x, point.x), y: Math.min(interaction.y, point.y), width: Math.abs(point.x - interaction.x), height: Math.abs(point.y - interaction.y) })
+    if (interaction.kind === 'draw') {
+      const context = canvas.getContext('2d')
+      if (!context) return
+      context.lineTo(point.x, point.y)
+      context.stroke()
       return
     }
-    const context = event.currentTarget.getContext('2d')
-    if (!context) return
-    context.lineTo(point.x, point.y)
-    context.stroke()
+
+    const dx = point.x - interaction.startX
+    const dy = point.y - interaction.startY
+    if (interaction.kind === 'crop-move') {
+      setCropRect({
+        ...interaction.initial,
+        x: Math.max(0, Math.min(canvas.width - interaction.initial.width, interaction.initial.x + dx)),
+        y: Math.max(0, Math.min(canvas.height - interaction.initial.height, interaction.initial.y + dy)),
+      })
+      return
+    }
+
+    const handle = interaction.handle ?? 'se'
+    const minimum = Math.min(32, canvas.width, canvas.height)
+    let left = interaction.initial.x
+    let right = interaction.initial.x + interaction.initial.width
+    let top = interaction.initial.y
+    let bottom = interaction.initial.y + interaction.initial.height
+    if (handle.includes('w')) left = Math.max(0, Math.min(right - minimum, interaction.initial.x + dx))
+    if (handle.includes('e')) right = Math.min(canvas.width, Math.max(left + minimum, interaction.initial.x + interaction.initial.width + dx))
+    if (handle.includes('n')) top = Math.max(0, Math.min(bottom - minimum, interaction.initial.y + dy))
+    if (handle.includes('s')) bottom = Math.min(canvas.height, Math.max(top + minimum, interaction.initial.y + interaction.initial.height + dy))
+    setCropRect({ x: left, y: top, width: right - left, height: bottom - top })
   }
 
   function finishPointer() {
@@ -414,11 +479,11 @@ function ImageEditorDialog({
 
   function applyCrop() {
     const canvas = canvasRef.current
-    if (!canvas || !selection || selection.width < 12 || selection.height < 12) return
-    const left = Math.max(0, Math.min(canvas.width - 1, Math.round(selection.x)))
-    const top = Math.max(0, Math.min(canvas.height - 1, Math.round(selection.y)))
-    const right = Math.max(left + 1, Math.min(canvas.width, Math.round(selection.x + selection.width)))
-    const bottom = Math.max(top + 1, Math.min(canvas.height, Math.round(selection.y + selection.height)))
+    if (!canvas || !cropRect) return
+    const left = Math.max(0, Math.min(canvas.width - 1, Math.round(cropRect.x)))
+    const top = Math.max(0, Math.min(canvas.height - 1, Math.round(cropRect.y)))
+    const right = Math.max(left + 1, Math.min(canvas.width, Math.round(cropRect.x + cropRect.width)))
+    const bottom = Math.max(top + 1, Math.min(canvas.height, Math.round(cropRect.y + cropRect.height)))
     const width = right - left
     const height = bottom - top
     const cropped = document.createElement('canvas')
@@ -430,21 +495,39 @@ function ImageEditorDialog({
     canvas.width = width
     canvas.height = height
     canvas.getContext('2d')?.drawImage(cropped, 0, 0)
-    setSelection(null)
+    setCropRect({ x: 0, y: 0, width, height })
+  }
+
+  function applyText() {
+    const canvas = canvasRef.current
+    if (!canvas || !textAnchor || !text.trim()) return
+    drawImageText(canvas, text, textAnchor, color, fontSize)
+    setTextAnchor(null)
+    setText('')
   }
 
   function saveImage() {
     const canvas = canvasRef.current
     if (!canvas || !canvasReady) return
+    if (textAnchor && text.trim()) drawImageText(canvas, text, textAnchor, color, fontSize)
     onSave({ ...attachment, dataUrl: canvas.toDataURL('image/jpeg', 0.9) })
   }
 
   const canvas = canvasRef.current
-  const selectionStyle = selection && canvas ? {
-    left: `${selection.x / canvas.width * 100}%`,
-    top: `${selection.y / canvas.height * 100}%`,
-    width: `${selection.width / canvas.width * 100}%`,
-    height: `${selection.height / canvas.height * 100}%`,
+  const cropStyle = cropRect && canvas ? {
+    left: `${cropRect.x / canvas.width * 100}%`,
+    top: `${cropRect.y / canvas.height * 100}%`,
+    width: `${cropRect.width / canvas.width * 100}%`,
+    height: `${cropRect.height / canvas.height * 100}%`,
+  } : undefined
+  const cropChanged = Boolean(cropRect && canvas && (cropRect.x > 0 || cropRect.y > 0 || cropRect.width < canvas.width || cropRect.height < canvas.height))
+  const textIsArabic = /[\u0600-\u06ff]/.test(text)
+  const liveTextStyle = canvas && textAnchor ? {
+    left: `${textAnchor.x / canvas.width * 100}%`,
+    top: `${textAnchor.y / canvas.height * 100}%`,
+    fontSize: `${Math.max(16, fontSize * (canvas.clientWidth / canvas.width))}px`,
+    color,
+    transform: textIsArabic ? 'translateX(-100%)' : undefined,
   } : undefined
 
   return (
@@ -455,25 +538,45 @@ function ImageEditorDialog({
           <button type="button" onClick={onCancel} className="rounded-full p-2 hover:bg-muted" aria-label={labels.cancel}><X className="size-5" /></button>
         </header>
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={() => { setMode('crop'); setSelection(null) }} className={cn('rounded-lg border px-3 py-2 text-sm', mode === 'crop' && 'border-primary bg-primary/10 text-primary')}>{labels.crop}</button>
-          <button type="button" onClick={() => { setMode('draw'); setSelection(null) }} className={cn('rounded-lg border px-3 py-2 text-sm', mode === 'draw' && 'border-primary bg-primary/10 text-primary')}>{labels.draw}</button>
-          <button type="button" onClick={() => { setMode('text'); setSelection(null) }} className={cn('rounded-lg border px-3 py-2 text-sm', mode === 'text' && 'border-primary bg-primary/10 text-primary')}>{labels.text}</button>
+          <button type="button" onClick={() => { setMode('crop'); setTextAnchor(null) }} className={cn('rounded-lg border px-3 py-2 text-sm', mode === 'crop' && 'border-primary bg-primary/10 text-primary')}>{labels.crop}</button>
+          <button type="button" onClick={() => { setMode('draw'); setTextAnchor(null) }} className={cn('rounded-lg border px-3 py-2 text-sm', mode === 'draw' && 'border-primary bg-primary/10 text-primary')}>{labels.draw}</button>
+          <button type="button" onClick={() => { setMode('text'); setTextAnchor(null); setText('') }} className={cn('rounded-lg border px-3 py-2 text-sm', mode === 'text' && 'border-primary bg-primary/10 text-primary')}>{labels.text}</button>
           <input type="color" value={color} onChange={(event) => setColor(event.target.value)} className="size-9 cursor-pointer rounded-md border bg-background p-1" aria-label={labels.draw} />
-          {mode === 'text' && <input value={text} onChange={(event) => setText(event.target.value)} placeholder={labels.textPlaceholder} className="min-w-40 flex-1 rounded-lg border bg-background px-3 py-2 text-sm" />}
-          {mode === 'crop' && selection && selection.width >= 12 && selection.height >= 12 && <button type="button" onClick={applyCrop} className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">{labels.applyCrop}</button>}
+          {mode === 'text' && <label className="flex items-center gap-2 text-xs text-muted-foreground"><span>{labels.fontSize}</span><input type="range" min="20" max="100" step="2" value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} aria-label={labels.fontSize} /></label>}
+          {mode === 'crop' && cropChanged && <button type="button" onClick={applyCrop} className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">{labels.applyCrop}</button>}
         </div>
         <p className="text-xs text-muted-foreground">{mode === 'crop' ? labels.cropHint : mode === 'draw' ? labels.draw : labels.textHint}</p>
         <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto rounded-xl bg-black/90 p-2">
-          <div className="relative mx-auto w-fit max-w-full leading-none">
-            <canvas
-              ref={canvasRef}
-              className={cn('block max-h-[58dvh] max-w-full touch-none object-contain', mode === 'crop' ? 'cursor-crosshair' : mode === 'draw' ? 'cursor-crosshair' : 'cursor-text')}
-              onPointerDown={handlePointerDown}
-              onPointerMove={handlePointerMove}
-              onPointerUp={finishPointer}
-              onPointerCancel={finishPointer}
-            />
-            {selectionStyle && <div aria-hidden="true" className="pointer-events-none absolute border-2 border-white bg-white/10" style={selectionStyle} />}
+          <div className="relative mx-auto w-fit max-w-full leading-none" onPointerDown={handleStagePointerDown} onPointerMove={handleStagePointerMove} onPointerUp={finishPointer} onPointerCancel={finishPointer}>
+            <canvas ref={canvasRef} className={cn('block max-h-[58dvh] max-w-full touch-none object-contain', mode === 'text' ? 'cursor-text' : 'cursor-crosshair')} />
+            {mode === 'crop' && cropStyle && (
+              <div aria-label={labels.crop} className="absolute border-2 border-white shadow-[0_0_0_9999px_rgba(0,0,0,0.55)]" style={cropStyle}>
+                <div data-crop-move="true" className="absolute inset-5 cursor-move touch-none" />
+                {([
+                  ['nw', 'left-0 top-0 -translate-x-1/2 -translate-y-1/2'],
+                  ['n', 'left-1/2 top-0 -translate-x-1/2 -translate-y-1/2'],
+                  ['ne', 'right-0 top-0 translate-x-1/2 -translate-y-1/2'],
+                  ['w', 'left-0 top-1/2 -translate-x-1/2 -translate-y-1/2'],
+                  ['e', 'right-0 top-1/2 translate-x-1/2 -translate-y-1/2'],
+                  ['sw', 'left-0 bottom-0 -translate-x-1/2 translate-y-1/2'],
+                  ['s', 'left-1/2 bottom-0 -translate-x-1/2 translate-y-1/2'],
+                  ['se', 'right-0 bottom-0 translate-x-1/2 translate-y-1/2'],
+                ] as const).map(([handle, position]) => (
+                  <div key={handle} data-crop-handle={handle} className={cn('absolute z-10 flex size-9 touch-none items-center justify-center rounded-full', position)}>
+                    <span className="size-4 rounded-full border-2 border-white bg-primary shadow-[0_0_0_2px_rgba(0,0,0,0.7)]" />
+                  </div>
+                ))}
+              </div>
+            )}
+            {mode === 'text' && textAnchor && liveTextStyle && (
+              <div className="absolute z-20" style={liveTextStyle} onPointerDown={(event) => event.stopPropagation()}>
+                <textarea autoFocus rows={Math.max(1, text.split('\n').length)} value={text} onChange={(event) => setText(event.target.value)} placeholder={labels.textPlaceholder} className="min-h-10 w-56 max-w-[76vw] resize rounded-md border border-dashed border-white/70 bg-black/35 p-1.5 font-semibold leading-tight text-shadow-sm outline-none placeholder:text-white/60" style={{ color, fontSize: liveTextStyle.fontSize, textAlign: textIsArabic ? 'right' : 'left', direction: textIsArabic ? 'rtl' : 'ltr', textShadow: '0 1px 4px rgba(0,0,0,.95)' }} />
+                <div className="mt-1 flex gap-1">
+                  <button type="button" disabled={!text.trim()} onClick={applyText} className="rounded-md bg-primary px-2 py-1 text-xs font-semibold text-primary-foreground disabled:opacity-50">{labels.applyText}</button>
+                  <button type="button" onClick={() => { setTextAnchor(null); setText('') }} className="rounded-md bg-black/70 px-2 py-1 text-xs font-semibold text-white">{labels.cancel}</button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
         <footer className="flex justify-end gap-2">
@@ -1795,6 +1898,8 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
             textHint: t.chat.ai.imageTextHint,
             cropHint: t.chat.ai.imageCropHint,
             applyCrop: t.chat.ai.imageApplyCrop,
+            applyText: t.chat.ai.imageApplyText,
+            fontSize: t.chat.ai.imageFontSize,
             save: t.chat.ai.imageSave,
             cancel: t.chat.cancel,
           }}
