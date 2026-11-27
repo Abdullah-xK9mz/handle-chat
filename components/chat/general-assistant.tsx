@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { ArrowLeft, Copy, Forward, Info, LoaderCircle, MessageCircle, Mic, PanelLeft, Pin, Plus, Reply, Send, Sparkles, Star, Trash2, X } from 'lucide-react'
+import { ArrowLeft, Copy, Forward, Info, LoaderCircle, MessageCircle, Mic, PanelLeft, Pencil, Pin, Plus, RefreshCw, Reply, Send, Sparkles, Star, Trash2, X } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -24,11 +24,14 @@ type AiMessage = {
   failed?: boolean
   codeIncomplete?: boolean
   continuesCodeFrom?: number | string
+  retryQuestion?: string
+  retryModelQuestion?: string
+  retryContinuationSourceId?: number | string
 }
 
 type HordeChatMessage = { role: 'system' | 'user' | 'assistant'; content: string }
-type HordeChunk = { choices?: Array<{ delta?: { content?: string | null }; finish_reason?: string | null }> }
-type SavedAiChat = { id: string; title: string; createdAt: string; updatedAt: string; serverHistory?: boolean }
+type HordeChunk = { error?: string | { message?: string; code?: string; type?: string }; choices?: Array<{ delta?: { content?: string | null }; finish_reason?: string | null }> }
+type SavedAiChat = { id: string; title: string; createdAt: string; updatedAt: string; serverHistory?: boolean; customTitle?: boolean }
 type AiContentSegment = { type: 'text'; text: string } | { type: 'code'; code: string; language: string; incomplete: boolean }
 type SpeechRecognitionResultLike = { isFinal: boolean; [index: number]: { transcript: string } }
 type SpeechRecognitionEventLike = { resultIndex: number; results: ArrayLike<SpeechRecognitionResultLike> }
@@ -47,8 +50,8 @@ type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
 const HORDE_CHAT_URL = 'https://oai.aihorde.net/v1/chat/completions'
 const HORDE_GUEST_KEY = '0000000000'
 const HORDE_MODELS = [
-  'koboldcpp/G4-MeroMero-26B-A4B-it-uncensored-heretic',
   'Qwen/Qwen3.8-Flash-Next',
+  'koboldcpp/G4-MeroMero-26B-A4B-it-uncensored-heretic',
 ]
 const MAX_QUESTION_LENGTH = 2000
 const MAX_ANSWER_LENGTH = 50_000
@@ -345,14 +348,43 @@ async function streamHordeAnswer(
   onText: (text: string) => void,
   signal: AbortSignal,
 ) {
-  const response = await fetch(HORDE_CHAT_URL, {
+  const retryDelay = (milliseconds: number) => new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException('The request was aborted.', 'AbortError'))
+      return
+    }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, milliseconds)
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      reject(new DOMException('The request was aborted.', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+
+  const retryable = (error: unknown) => Boolean(error && typeof error === 'object' && 'retryable' in error && error.retryable === true)
+  const retryAfter = (error: unknown) => error && typeof error === 'object' && 'retryAfterMs' in error && typeof error.retryAfterMs === 'number' ? error.retryAfterMs : 0
+  const failure = (message: string, canRetry: boolean, retryAfterMs = 0) => Object.assign(new Error(message), { retryable: canRetry, retryAfterMs })
+  const waitFromHeader = (value: string | null) => {
+    if (!value) return 0
+    const seconds = Number(value)
+    if (Number.isFinite(seconds)) return Math.max(0, Math.min(15_000, seconds * 1000))
+    const date = Date.parse(value)
+    return Number.isFinite(date) ? Math.max(0, Math.min(15_000, date - Date.now())) : 0
+  }
+
+  const requestOnce = async (models: string[]) => {
+    const response = await fetch(HORDE_CHAT_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${HORDE_GUEST_KEY}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      models: HORDE_MODELS,
+      models,
       messages: [{ role: 'system', content: `${GENERAL_ASSISTANT_INSTRUCTIONS}\n\nCurrent date and time: ${currentDateTime}` }, ...history],
       // AI Horde rejects max_tokens above 16,384 on its OpenAI-compatible API.
       max_tokens: 16_384,
@@ -362,24 +394,51 @@ async function streamHordeAnswer(
     signal,
   })
 
-  if (!response.ok) throw new Error(`HORDE_${response.status}`)
-  if (!response.body) throw new Error('HORDE_NO_STREAM')
+    if (!response.ok) {
+      const retryHeader = response.headers.get('x-should-retry')
+      let detail = `HTTP ${response.status}`
+      try {
+        const payload: unknown = await response.json()
+        const error = (payload as { error?: string | { message?: string } })?.error
+        detail = typeof error === 'string' ? error : error?.message || detail
+      } catch {
+        // The response body is optional; the HTTP status is enough to choose a retry policy.
+      }
+      const canRetry = retryHeader !== 'false' && (response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500)
+      throw failure(`HORDE_${response.status}: ${detail}`, canRetry, waitFromHeader(response.headers.get('retry-after')))
+    }
+    if (!response.body) throw failure('HORDE_NO_STREAM', true)
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let answer = ''
-  let answerLimitReached = false
-  let stoppedAtTokenLimit = false
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let answer = ''
+    let answerLimitReached = false
+    let stoppedAtTokenLimit = false
+    let streamFinished = false
 
-  const consumeLine = (line: string) => {
-    const trimmed = line.trim()
-    if (!trimmed.startsWith('data:')) return
-    const payload = trimmed.slice(5).trim()
-    if (!payload || payload === '[DONE]') return
-    try {
-      const chunk = JSON.parse(payload) as HordeChunk
+    const consumeLine = (line: string) => {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('data:')) return
+      const payload = trimmed.slice(5).trim()
+      if (!payload) return
+      if (payload === '[DONE]') {
+        streamFinished = true
+        return
+      }
+      let chunk: HordeChunk
+      try {
+        chunk = JSON.parse(payload) as HordeChunk
+      } catch {
+        // Ignore non-JSON keep-alive lines from the streaming endpoint.
+        return
+      }
+      if (chunk.error) {
+        const detail = typeof chunk.error === 'string' ? chunk.error : chunk.error.message || chunk.error.code || 'Stream error'
+        throw failure(`HORDE_STREAM: ${detail}`, response.headers.get('x-should-retry') !== 'false', waitFromHeader(response.headers.get('retry-after')))
+      }
       if (chunk.choices?.some((choice) => choice.finish_reason === 'length')) stoppedAtTokenLimit = true
+      if (chunk.choices?.some((choice) => choice.finish_reason != null)) streamFinished = true
       const addition = chunk.choices?.[0]?.delta?.content
       if (typeof addition === 'string' && addition && !answerLimitReached) {
         const remainingCharacters = MAX_ANSWER_LENGTH - answer.length
@@ -388,34 +447,58 @@ async function streamHordeAnswer(
         answerLimitReached = answer.length >= MAX_ANSWER_LENGTH
         if (answerLimitReached) stoppedAtTokenLimit = true
       }
-    } catch {
-      // Ignore non-JSON keep-alive lines from the streaming endpoint.
     }
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read()
+        buffer += decoder.decode(value, { stream: !done })
+        const lines = buffer.split(/\r?\n/)
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          consumeLine(line)
+          if (answerLimitReached) break
+        }
+        if (answerLimitReached) {
+          streamFinished = true
+          await reader.cancel().catch(() => undefined)
+          break
+        }
+        if (done) break
+      }
+      if (buffer && !answerLimitReached) consumeLine(buffer)
+    } catch (error) {
+      await reader.cancel().catch(() => undefined)
+      if (signal.aborted) throw error
+      if (error && typeof error === 'object' && 'retryable' in error) throw error
+      throw failure(error instanceof Error ? error.message : 'HORDE_STREAM_INTERRUPTED', true)
+    } finally {
+      reader.releaseLock()
+    }
+
+    if (!answer.trim()) throw failure('HORDE_EMPTY_REPLY', true)
+    if (!streamFinished) throw failure('HORDE_STREAM_INCOMPLETE', true)
+    return { text: answer.trim(), stoppedAtTokenLimit }
   }
 
-  try {
-    while (true) {
-      const { value, done } = await reader.read()
-      buffer += decoder.decode(value, { stream: !done })
-      const lines = buffer.split(/\r?\n/)
-      buffer = lines.pop() ?? ''
-      for (const line of lines) {
-        consumeLine(line)
-        if (answerLimitReached) break
-      }
-      if (answerLimitReached) {
-        await reader.cancel().catch(() => undefined)
-        break
-      }
-      if (done) break
+  let lastError: unknown = null
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (signal.aborted) throw new DOMException('The request was aborted.', 'AbortError')
+    try {
+      // Rotate the preferred worker on retries so a busy model does not block every attempt.
+      const models = attempt % 2 === 0 ? HORDE_MODELS : [...HORDE_MODELS].reverse()
+      return await requestOnce(models)
+    } catch (error) {
+      if (signal.aborted) throw error
+      const normalizedError = error instanceof TypeError ? failure('HORDE_NETWORK_ERROR', true) : error
+      lastError = normalizedError
+      if (!retryable(normalizedError) || attempt === 2) break
+      onText('')
+      const backoff = Math.min(8_000, 1_000 * 2 ** attempt)
+      await retryDelay(Math.max(backoff, retryAfter(normalizedError)))
     }
-    if (buffer && !answerLimitReached) consumeLine(buffer)
-  } finally {
-    reader.releaseLock()
   }
-
-  if (!answer.trim()) throw new Error('HORDE_EMPTY_REPLY')
-  return { text: answer.trim(), stoppedAtTokenLimit }
+  throw lastError ?? failure('HORDE_REQUEST_FAILED', false)
 }
 
 export function GeneralAssistant({ onBack, userId, availableConversations }: { onBack: () => void; userId: string; availableConversations: ConversationSummary[] }) {
@@ -773,6 +856,29 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
     }
   }
 
+  async function retryFailedAnswer(message: AiMessage) {
+    if (busy || !message.failed || !message.retryQuestion || !message.retryModelQuestion) return
+    const answerIndex = messages.findIndex((item) => item.id === message.id)
+    const userMessage = answerIndex > 0 ? messages[answerIndex - 1] : null
+    if (!userMessage || userMessage.role !== 'user') return
+    const selectedReply = userMessage.reply_to_id == null ? null : messages.find((item) => item.id === userMessage.reply_to_id) ?? {
+      id: userMessage.reply_to_id,
+      role: 'assistant' as const,
+      body: userMessage.reply_body ?? '',
+    }
+    const continuationSource = message.retryContinuationSourceId == null
+      ? undefined
+      : messages.find((item) => item.id === message.retryContinuationSourceId)
+    await submitQuestion(
+      message.retryQuestion,
+      message.retryModelQuestion,
+      selectedReply,
+      continuationSource,
+      false,
+      { userMessage, answerId: String(message.id) },
+    )
+  }
+
   function createNewChat() {
     if (busy) return
     const now = new Date().toISOString()
@@ -842,12 +948,22 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
       const hasPriorQuestion = messages.some((message) => message.role === 'user' && !message.deleted_at)
       const updated = current.map((item) => item.id === activeChatId ? {
         ...item,
-        title: hasPriorQuestion ? item.title : makeChatTitle(question, t.chat.ai.newChat),
+        title: item.customTitle || hasPriorQuestion ? item.title : makeChatTitle(question, t.chat.ai.newChat),
         updatedAt: now,
       } : item).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       writeSavedChats(userId, updated)
       return updated
     })
+  }
+
+  function renameSavedChat(chat: SavedAiChat) {
+    const nextTitle = window.prompt(t.chat.ai.renameChatPrompt, chat.title || t.chat.ai.newChat)?.trim()
+    if (!nextTitle) return
+    const title = makeChatTitle(nextTitle, t.chat.ai.newChat)
+    const updated = savedChats.map((item) => item.id === chat.id ? { ...item, title, customTitle: true, updatedAt: new Date().toISOString() } : item)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    setSavedChats(updated)
+    writeSavedChats(userId, updated)
   }
 
   async function copyCode(key: string, text: string) {
@@ -941,6 +1057,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
     selectedReply: AiMessage | null,
     continuationSource?: AiMessage,
     clearDraft = true,
+    retryExchange?: { userMessage: AiMessage; answerId: string },
   ) {
     if (!question || historyLoading || busy || question.length > MAX_QUESTION_LENGTH) return
 
@@ -949,32 +1066,32 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
     setSaveError(false)
     setQueueInfo(null)
     setAiStatusIndex(0)
-    const userId = crypto.randomUUID()
-    const answerId = crypto.randomUUID()
+    const exchangeUserId = retryExchange ? String(retryExchange.userMessage.client_id ?? retryExchange.userMessage.id) : crypto.randomUUID()
+    const answerId = retryExchange?.answerId ?? crypto.randomUUID()
     const controller = new AbortController()
     controllerRef.current = controller
-    const previousHistory = messages
+    const userMessageIndex = retryExchange ? messages.findIndex((message) => message.id === retryExchange.userMessage.id) : messages.length
+    const previousHistory = (retryExchange ? messages.slice(0, Math.max(0, userMessageIndex)) : messages)
       .filter((message) => !message.pending && !message.failed && !message.deleted_at)
       .slice(-12)
       .map((message) => ({ role: message.role, content: message.body }))
-    const userMessage: AiMessage = {
-      id: userId,
-      client_id: userId,
+    const userMessage: AiMessage = retryExchange?.userMessage ?? {
+      id: exchangeUserId,
+      client_id: exchangeUserId,
       role: 'user',
       body: question,
       created_at: new Date().toISOString(),
       reply_to_id: selectedReply?.id ?? null,
       reply_body: selectedReply?.body ?? null,
     }
-    const persistedUserMessages = [...messages, userMessage]
+    const pendingAnswer: AiMessage = { id: answerId, client_id: answerId, role: 'assistant', body: '', pending: true }
+    const nextMessages = retryExchange
+      ? messages.map((message) => message.id === answerId ? pendingAnswer : message)
+      : [...messages, userMessage, pendingAnswer]
     updateChatMetadata(question)
 
-    setMessages((current) => [
-      ...current,
-      userMessage,
-      { id: answerId, role: 'assistant', body: '', pending: true },
-    ])
-    writeLocalHistory(historyKey, persistedUserMessages)
+    setMessages(nextMessages)
+    writeLocalHistory(historyKey, nextMessages)
     setReplyTo(null)
     setBusy(true)
 
@@ -996,11 +1113,14 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
         codeIncomplete,
         ...(continuationSource ? { continuesCodeFrom: continuationSource.id } : {}),
       }
-      writeLocalHistory(historyKey, [...messages, userMessage, assistantMessage])
+      const completedMessages = retryExchange
+        ? messages.map((message) => message.id === answerId ? assistantMessage : message)
+        : [...messages, userMessage, assistantMessage]
+      writeLocalHistory(historyKey, completedMessages)
       setMessages((current) => current.map((message) => message.id === answerId ? assistantMessage : message))
       if (activeChat?.serverHistory) {
         try {
-          await saveExchangeToDatabase(userId, answerId, question, answer, selectedReply)
+          await saveExchangeToDatabase(exchangeUserId, answerId, question, answer, selectedReply)
         } catch {
           setSaveError(true)
         }
@@ -1009,7 +1129,15 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
       if (controller.signal.aborted) {
         setMessages((current) => current.filter((message) => message.id !== answerId))
       } else {
-        setMessages((current) => current.map((message) => message.id === answerId ? { ...message, body: t.chat.ai.replyError, pending: false, failed: true } : message))
+        setMessages((current) => current.map((message) => message.id === answerId ? {
+          ...message,
+          body: t.chat.ai.retryNotice,
+          pending: false,
+          failed: true,
+          retryQuestion: question,
+          retryModelQuestion: modelQuestion,
+          ...(continuationSource ? { retryContinuationSourceId: continuationSource.id } : {}),
+        } : message))
       }
     } finally {
       if (controllerRef.current === controller) controllerRef.current = null
@@ -1061,7 +1189,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
       setActiveMessageId(null)
       setSaveError(false)
       setHistoryError(false)
-      setSavedChats((current) => current.map((chat) => chat.id === activeChatId ? { ...chat, title: t.chat.ai.newChat, updatedAt: new Date().toISOString() } : chat))
+      setSavedChats((current) => current.map((chat) => chat.id === activeChatId ? { ...chat, title: chat.customTitle ? chat.title : t.chat.ai.newChat, updatedAt: new Date().toISOString() } : chat))
     } catch {
       setSaveError(true)
     }
@@ -1087,6 +1215,9 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
                 <button type="button" onClick={() => selectSavedChat(chat)} className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2.5 text-start text-sm" aria-current={chat.id === activeChatId ? 'page' : undefined}>
                   <MessageCircle className="size-4 shrink-0 text-primary/80" />
                   <span className="min-w-0 flex-1 truncate">{chat.title || t.chat.ai.newChat}</span>
+                </button>
+                <button type="button" className="rounded-md p-2 text-muted-foreground opacity-70 hover:bg-background hover:text-foreground md:opacity-0 md:group-hover:opacity-100" onClick={() => renameSavedChat(chat)} disabled={busy} aria-label={`${t.chat.ai.renameChat}: ${chat.title}`} title={t.chat.ai.renameChat}>
+                  <Pencil className="size-3.5" />
                 </button>
                 <button type="button" className="me-1 rounded-md p-2 text-muted-foreground opacity-70 hover:bg-background hover:text-destructive md:opacity-0 md:group-hover:opacity-100" onClick={() => void deleteSavedChat(chat)} disabled={busy} aria-label={`${t.chat.ai.deleteChat}: ${chat.title}`} title={t.chat.ai.deleteChat}>
                   <Trash2 className="size-3.5" />
@@ -1174,6 +1305,11 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
                       <span>{t.chat.ai.waitingStatuses[aiStatusIndex] ?? t.chat.ai.thinking}</span>
                       {queueInfo && <span className="text-muted-foreground/75">{t.chat.ai.queueStatus(queueInfo.queued, queueInfo.workers)}</span>}
                     </div>
+                  )}
+                  {message.failed && message.retryQuestion && (
+                    <button type="button" className="mt-2 inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-muted disabled:opacity-50" onClick={(event) => { event.stopPropagation(); void retryFailedAnswer(message) }} disabled={busy}>
+                      <RefreshCw className="size-3.5" />{t.chat.ai.retry}
+                    </button>
                   )}
                   {(message.starred || message.pinned) && <div className="mt-1 flex justify-end gap-1 opacity-80">{message.pinned && <Pin className="size-3" aria-label={t.chat.pinMessage} />}{message.starred && <Star className="size-3" aria-label={t.chat.starMessage} />}</div>}
                 </div>
