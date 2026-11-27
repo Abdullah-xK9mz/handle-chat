@@ -50,11 +50,12 @@ type SpeechRecognitionConstructor = new () => SpeechRecognitionLike
 const HORDE_CHAT_URL = 'https://oai.aihorde.net/v1/chat/completions'
 const HORDE_GUEST_KEY = '0000000000'
 const HORDE_MODELS = [
-  'Qwen/Qwen3.8-Flash-Next',
   'koboldcpp/G4-MeroMero-26B-A4B-it-uncensored-heretic',
+  'Qwen/Qwen3.8-Flash-Next',
 ]
 const MAX_QUESTION_LENGTH = 2000
 const MAX_ANSWER_LENGTH = 50_000
+const MAX_HORDE_HISTORY_CHARACTERS = 24_000
 const HISTORY_IMPORT_BATCH_SIZE = 25
 const HISTORY_IMPORT_BATCH_CHARACTERS = 250_000
 const AI_CONTACT_NAME_PREFIX = 'message.ai-contact-name.v1'
@@ -183,6 +184,18 @@ function queueMessage(data: unknown) {
   const queued = selected.reduce((sum, model) => sum + (typeof model.x_horde?.queued === 'number' ? model.x_horde.queued : 0), 0)
   const workers = selected.reduce((sum, model) => sum + (typeof model.x_horde?.workers === 'number' ? model.x_horde.workers : 0), 0)
   return { queued, workers }
+}
+
+function fitHordeHistory(history: HordeChatMessage[]) {
+  let remaining = MAX_HORDE_HISTORY_CHARACTERS
+  const recent: HordeChatMessage[] = []
+  for (let index = history.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    const message = history[index]
+    const content = message.content.length > remaining ? message.content.slice(-remaining) : message.content
+    recent.unshift({ ...message, content })
+    remaining -= content.length
+  }
+  return recent
 }
 
 function shouldOfferCodeContinue(messages: AiMessage[], message: AiMessage) {
@@ -385,9 +398,10 @@ async function streamHordeAnswer(
     },
     body: JSON.stringify({
       models,
-      messages: [{ role: 'system', content: `${GENERAL_ASSISTANT_INSTRUCTIONS}\n\nCurrent date and time: ${currentDateTime}` }, ...history],
-      // AI Horde rejects max_tokens above 16,384 on its OpenAI-compatible API.
-      max_tokens: 16_384,
+      messages: [{ role: 'system', content: `${GENERAL_ASSISTANT_INSTRUCTIONS}\n\nCurrent date and time: ${currentDateTime}` }, ...fitHordeHistory(history)],
+      horde: { context_fit: 'truncate_oldest', include_reasoning: false },
+      // The shared anonymous key is refused when workers require upfront kudos above 4,096 tokens.
+      max_tokens: 4_096,
       temperature: 0.4,
       stream: true,
     }),
@@ -404,7 +418,7 @@ async function streamHordeAnswer(
       } catch {
         // The response body is optional; the HTTP status is enough to choose a retry policy.
       }
-      const canRetry = retryHeader !== 'false' && (response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500)
+      const canRetry = retryHeader !== 'false' && (response.status === 403 || response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500)
       throw failure(`HORDE_${response.status}: ${detail}`, canRetry, waitFromHeader(response.headers.get('retry-after')))
     }
     if (!response.body) throw failure('HORDE_NO_STREAM', true)
