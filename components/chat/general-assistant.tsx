@@ -445,6 +445,19 @@ function ImageEditorDialog({
       context.strokeStyle = drawColor
       return
     }
+    const selectedText = textLayers.find((item) => item.id === activeTextId)
+    if (mode === 'text' && selectedText?.text.trim()) {
+      // A tap on the image places the selected text there; it must not replace it
+      // with a new, empty text layer.
+      setTextLayers((current) => current.map((item) => item.id === selectedText.id
+        ? { ...item, x: point.x, y: point.y }
+        : item))
+      setActiveTextId(null)
+      interactionRef.current = { kind: 'text-move', textId: selectedText.id, startX: point.x, startY: point.y, initial: { x: point.x, y: point.y } }
+      event.currentTarget.setPointerCapture(event.pointerId)
+      return
+    }
+    if (mode === 'text' && selectedText) removeTextLayer(selectedText.id)
     const newText: ImageTextLayer = { id: crypto.randomUUID(), ...point, text: '', color: textColor, fontSize }
     setTextLayers((current) => [...current, newText])
     setActiveTextId(newText.id)
