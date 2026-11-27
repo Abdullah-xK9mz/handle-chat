@@ -86,8 +86,8 @@
 
 @layer base {
   html,
-  body {
-    overscroll-behavior-x: none;
+  body,
+  body * {
     overscroll-behavior-y: none;
   }
 

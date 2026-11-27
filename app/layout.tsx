@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { I18nProvider } from '@/components/i18n-provider'
+import { PreventPullToRefresh } from '@/components/prevent-pull-to-refresh'
 import './globals.css'
 
 const repositoryParts = process.env.GITHUB_REPOSITORY?.split('/')
@@ -60,6 +61,7 @@ export default function RootLayout({
         <link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&display=swap" rel="stylesheet" />
       </head>
       <body className="antialiased">
+        <PreventPullToRefresh />
         <I18nProvider>{children}</I18nProvider>
       </body>
     </html>

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { edgeRequest } from '@/lib/supabase'
 import { readStoredValue, removeStoredValue, writeStoredValue } from '@/lib/safe-storage'
+import { AI_SPEECH_VOICE_KEY } from '@/lib/chat-preferences'
 import type { ConversationSummary } from './types'
 
 type AiMessage = {
@@ -1138,7 +1139,6 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
   const [attachedImage, setAttachedImage] = useState<AiImageAttachment | null>(null)
   const [imageEditorOpen, setImageEditorOpen] = useState(false)
   const [speechSupported, setSpeechSupported] = useState(false)
-  const [speechOutputSupported, setSpeechOutputSupported] = useState(false)
   const [speakingMessageId, setSpeakingMessageId] = useState<number | string | null>(null)
   const [downloadingImageId, setDownloadingImageId] = useState<number | string | null>(null)
   const [recordingSpeech, setRecordingSpeech] = useState(false)
@@ -1219,11 +1219,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
     }
   }, [speechSupported])
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    setSpeechOutputSupported('speechSynthesis' in window && 'SpeechSynthesisUtterance' in window)
-    return () => window.speechSynthesis?.cancel()
-  }, [])
+  useEffect(() => () => window.speechSynthesis?.cancel(), [])
 
   useEffect(() => {
     if (!busy) {
@@ -1397,7 +1393,10 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
   }
 
   function toggleSpeechOutput(message: AiMessage) {
-    if (!speechOutputSupported || typeof window === 'undefined') return
+    if (typeof window === 'undefined' || typeof window.speechSynthesis?.speak !== 'function' || typeof SpeechSynthesisUtterance === 'undefined') {
+      setActionNotice(t.chat.ai.speechNotSupported)
+      return
+    }
     if (speakingMessageId === message.id) {
       window.speechSynthesis.cancel()
       setSpeakingMessageId(null)
@@ -1407,7 +1406,14 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
     if (!spokenText) return
     window.speechSynthesis.cancel()
     const utterance = new SpeechSynthesisUtterance(spokenText)
-    utterance.lang = speechLanguage(spokenText)
+    const language = speechLanguage(spokenText)
+    const voices = window.speechSynthesis.getVoices()
+    const selectedVoiceURI = readStoredValue(AI_SPEECH_VOICE_KEY)
+    const voice = (selectedVoiceURI ? voices.find((item) => item.voiceURI === selectedVoiceURI) : undefined) ??
+      voices.find((item) => item.lang.toLowerCase() === language.toLowerCase()) ??
+      voices.find((item) => item.lang.toLowerCase().startsWith(language.slice(0, 2)))
+    utterance.lang = voice?.lang ?? language
+    if (voice) utterance.voice = voice
     utterance.onend = () => setSpeakingMessageId((current) => current === message.id ? null : current)
     utterance.onerror = () => setSpeakingMessageId((current) => current === message.id ? null : current)
     setSpeakingMessageId(message.id)
@@ -2059,12 +2065,10 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
                       <button type="button" className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs hover:bg-muted" onClick={(event) => { event.stopPropagation(); void copyMessage(message) }} aria-label={t.chat.copyMessage} title={t.chat.copyMessage}>
                         <Copy className="size-3.5" />{t.chat.copyMessage}
                       </button>
-                      {speechOutputSupported && (
-                        <button type="button" className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs hover:bg-muted" onClick={(event) => { event.stopPropagation(); toggleSpeechOutput(message) }} aria-label={speakingMessageId === message.id ? t.chat.ai.stopReading : t.chat.ai.readAloud} title={speakingMessageId === message.id ? t.chat.ai.stopReading : t.chat.ai.readAloud}>
-                          {speakingMessageId === message.id ? <span aria-hidden="true">⏹️</span> : <Mic className="size-3.5" />}
-                          {speakingMessageId === message.id ? t.chat.ai.stopReading : t.chat.ai.readAloud}
-                        </button>
-                      )}
+                      <button type="button" className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs hover:bg-muted" onClick={(event) => { event.stopPropagation(); toggleSpeechOutput(message) }} aria-label={speakingMessageId === message.id ? t.chat.ai.stopReading : t.chat.ai.readAloud} title={speakingMessageId === message.id ? t.chat.ai.stopReading : t.chat.ai.readAloud}>
+                        {speakingMessageId === message.id ? <span aria-hidden="true">⏹️</span> : <Mic className="size-3.5" />}
+                        {speakingMessageId === message.id ? t.chat.ai.stopReading : t.chat.ai.readAloud}
+                      </button>
                     </div>
                   )}
                 </div>

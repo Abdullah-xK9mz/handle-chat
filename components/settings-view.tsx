@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Bot, Camera, Check, Copy, Download, FileUp, Laptop, LogOut, QrCode, RotateCw, Save, ScanLine, Shield, Smartphone, Tablet, Trash2, UserRoundX, X } from 'lucide-react'
+import { ArrowLeft, Bot, Camera, Check, Copy, Download, FileUp, Laptop, LogOut, QrCode, RotateCw, Save, ScanLine, Shield, Smartphone, Tablet, Trash2, UserRoundX, Volume2, X } from 'lucide-react'
 import { LanguageToggle } from '@/components/language-toggle'
 import { UserAvatar } from '@/components/chat/user-avatar'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -21,7 +21,7 @@ import {
 } from '@/lib/supabase'
 import { errorMessage } from '@/lib/i18n/dictionaries'
 import { closeChatPage, pushChatPage } from '@/lib/chat-pages'
-import { NOTIFICATION_PREVIEW_KEY, readBooleanPreference, SEND_ON_ENTER_KEY, writeBooleanPreference } from '@/lib/chat-preferences'
+import { AI_SPEECH_VOICE_KEY, NOTIFICATION_PREVIEW_KEY, readBooleanPreference, SEND_ON_ENTER_KEY, writeBooleanPreference } from '@/lib/chat-preferences'
 import { getNativeApp, pickNativeFileAsFile } from '@/lib/native-app'
 import { readStoredValue, writeStoredValue } from '@/lib/safe-storage'
 
@@ -148,6 +148,8 @@ export function SettingsView({
   const [blockedLoading, setBlockedLoading] = useState(false)
   const [blockedError, setBlockedError] = useState(false)
   const [messageTextSize, setMessageTextSize] = useState<'small' | 'normal' | 'large'>('normal')
+  const [speechVoices, setSpeechVoices] = useState<SpeechSynthesisVoice[]>([])
+  const [speechVoiceURI, setSpeechVoiceURI] = useState('')
   const [sendOnEnter, setSendOnEnter] = useState(true)
   const [notificationPreview, setNotificationPreview] = useState(true)
   const [privacyReadReceipts, setPrivacyReadReceipts] = useState(true)
@@ -168,6 +170,23 @@ export function SettingsView({
 
   useEffect(() => {
     setNotificationsEnabled(readStoredValue('handle.notifications.enabled.v1') === 'true')
+  }, [])
+
+  useEffect(() => {
+    if (!('speechSynthesis' in window)) return
+    const savedVoiceURI = readStoredValue(AI_SPEECH_VOICE_KEY) ?? ''
+    setSpeechVoiceURI(savedVoiceURI)
+    const refreshVoices = () => {
+      const voices = window.speechSynthesis.getVoices()
+      setSpeechVoices(voices)
+      setSpeechVoiceURI((current) => {
+        const preferred = current || savedVoiceURI
+        return voices.some((voice) => voice.voiceURI === preferred) ? preferred : ''
+      })
+    }
+    refreshVoices()
+    window.speechSynthesis.addEventListener('voiceschanged', refreshVoices)
+    return () => window.speechSynthesis.removeEventListener('voiceschanged', refreshVoices)
   }, [])
 
   useEffect(() => {
@@ -393,6 +412,28 @@ export function SettingsView({
   function changeSendOnEnter(value: boolean) {
     setSendOnEnter(value)
     writeBooleanPreference(SEND_ON_ENTER_KEY, value)
+  }
+
+  function changeSpeechVoice(value: string) {
+    setSpeechVoiceURI(value)
+    writeStoredValue(AI_SPEECH_VOICE_KEY, value)
+  }
+
+  function previewSpeechVoice() {
+    if (typeof window === 'undefined' || typeof window.speechSynthesis?.speak !== 'function' || typeof SpeechSynthesisUtterance === 'undefined') {
+      setActionNotice(t.settings.speechUnavailable)
+      return
+    }
+    const voice = speechVoices.find((item) => item.voiceURI === speechVoiceURI)
+    const utterance = new SpeechSynthesisUtterance(locale === 'ar' ? 'أهلًا، ده مثال على صوت القراءة في تطبيق Message.' : 'Hello, this is a preview of the Message reading voice.')
+    if (voice) {
+      utterance.voice = voice
+      utterance.lang = voice.lang
+    } else {
+      utterance.lang = locale === 'ar' ? 'ar-EG' : 'en-US'
+    }
+    window.speechSynthesis.cancel()
+    window.speechSynthesis.speak(utterance)
   }
 
   function changeNotificationPreview(value: boolean) {
@@ -964,6 +1005,18 @@ Replies from you have from="you"; your earlier assistant messages have from="ai"
               <span className="mt-0.5 block text-xs text-muted-foreground">{t.settings.sendOnEnterHint}</span>
             </span>
           </label>
+          <div className="mt-4 border-t pt-4">
+            <label htmlFor="ai-speech-voice" className="block text-sm font-medium">{t.settings.speechVoice}</label>
+            <p className="mt-1 text-xs text-muted-foreground">{t.settings.speechVoiceHint}</p>
+            <div className="mt-2 flex gap-2">
+              <select id="ai-speech-voice" value={speechVoiceURI} disabled={speechVoices.length === 0} onChange={(event) => changeSpeechVoice(event.target.value)} className="h-10 min-w-0 flex-1 rounded-xl border bg-background px-3 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/30 disabled:opacity-60">
+                <option value="">{t.settings.speechVoiceAutomatic}</option>
+                {speechVoices.map((voice, index) => <option key={`${voice.voiceURI}:${index}`} value={voice.voiceURI}>{voice.name} · {voice.lang}{voice.default ? ` · ${t.settings.speechVoiceDefault}` : ''}</option>)}
+              </select>
+              <Button type="button" size="icon" variant="outline" onClick={previewSpeechVoice} disabled={speechVoices.length === 0} aria-label={t.settings.previewSpeechVoice} title={t.settings.previewSpeechVoice}><Volume2 className="size-4" /></Button>
+            </div>
+            {speechVoices.length === 0 && <p role="status" className="mt-2 text-xs text-muted-foreground">{t.settings.speechVoiceUnavailable}</p>}
+          </div>
         </section>
 
         <section className="mt-4 rounded-2xl border bg-card p-5 shadow-sm sm:p-6" aria-labelledby="language-title">
