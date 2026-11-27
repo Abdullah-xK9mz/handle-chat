@@ -181,7 +181,7 @@ export function ConversationView({
   const [selectedMessageIds, setSelectedMessageIds] = useState<Set<number>>(() => new Set())
   const [scheduledMessages, setScheduledMessages] = useState<Array<{ id: string; body: string; sendAt: string; status: 'pending' | 'failed'; replyTo: number | null }>>([])
   const [actionNotice, setActionNotice] = useState<string | null>(null)
-  const [reportMenuOpen, setReportMenuOpen] = useState(false)
+  const [conversationMenuOpen, setConversationMenuOpen] = useState(false)
   const [openMessageActions, setOpenMessageActions] = useState<number | null>(null)
   const [messageActionAnchor, setMessageActionAnchor] = useState<{ top: number; bottom: number; left: number; right: number } | null>(null)
   const [messageActionPosition, setMessageActionPosition] = useState<{ top: number; left: number } | null>(null)
@@ -515,7 +515,7 @@ export function ConversationView({
 
   async function reportChat(target: 'person' | 'conversation') {
     const details = window.prompt(t.chat.reportReason)
-    setReportMenuOpen(false)
+    setConversationMenuOpen(false)
     if (details === null) return
     try {
       await edgeRequest({
@@ -586,15 +586,15 @@ export function ConversationView({
   }, [openMessageActions])
 
   useEffect(() => {
-    if (!reportMenuOpen) return
+    if (!conversationMenuOpen) return
     const dismiss = (event: PointerEvent) => {
       const target = event.target
-      if (target instanceof Element && target.closest('[data-report-menu], [data-report-menu-trigger]')) return
-      setReportMenuOpen(false)
+      if (target instanceof Element && target.closest('[data-conversation-menu], [data-conversation-menu-trigger]')) return
+      setConversationMenuOpen(false)
     }
     document.addEventListener('pointerdown', dismiss)
     return () => document.removeEventListener('pointerdown', dismiss)
-  }, [reportMenuOpen])
+  }, [conversationMenuOpen])
 
   useEffect(() => {
     if (!groupMemberMenuId) return
@@ -1008,26 +1008,43 @@ export function ConversationView({
             {!isGroup && !data?.other?.isOnline && data?.other?.lastSeenAt && <span className="block text-[11px] text-muted-foreground">{locale === 'ar' ? 'آخر ظهور' : 'Last seen'} · {new Date(data.other.lastSeenAt).toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' })}</span>}
           </span>
         </button>
-        <div className="ms-auto flex shrink-0 items-center gap-0.5">
+        <div className="ms-auto flex shrink-0 items-center gap-0.5" dir={locale === 'ar' ? 'rtl' : 'ltr'}>
           <Button variant="ghost" size="icon" onClick={() => { setSearchOpen((open) => !open); setSearchResults([]) }} aria-label={t.chat.searchConversation} title={t.chat.searchConversation}>
             <Search />
           </Button>
-          <Button variant="ghost" size="icon" onClick={() => void toggleMute()} aria-label={isMuted ? t.chat.unmuteConversation : t.chat.muteConversation} title={isMuted ? t.chat.unmuteConversation : t.chat.muteConversation}>
-            {isMuted ? <BellOff /> : <Bell />}
-          </Button>
-          {!isGroup && otherUserId && (
-            <Button variant="ghost" size="icon" onClick={() => void toggleBlock()} aria-label={isBlockedByMe ? t.chat.unblockPerson : t.chat.blockPerson} title={isBlockedByMe ? t.chat.unblockPerson : t.chat.blockPerson}>
-              {isBlockedByMe ? <ShieldCheck /> : <Ban />}
-            </Button>
-          )}
           <div className="relative">
-            <Button variant="ghost" size="icon" data-report-menu-trigger onClick={() => setReportMenuOpen((open) => !open)} aria-label={t.chat.reportOptions} title={t.chat.reportOptions}>
-              <Flag />
+            <Button variant="ghost" size="icon" data-conversation-menu-trigger onClick={() => setConversationMenuOpen((open) => !open)} aria-label={t.chat.conversationOptions} title={t.chat.conversationOptions} aria-expanded={conversationMenuOpen}>
+              <MoreHorizontal />
             </Button>
-            {reportMenuOpen && (
-              <div data-report-menu className="absolute end-0 top-full z-20 mt-1 min-w-48 rounded-xl border bg-popover p-1 shadow-lg">
-                {!isGroup && otherUserId && <button type="button" className="w-full rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => void reportChat('person')}>{t.chat.reportPerson}</button>}
-                <button type="button" className="w-full rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => void reportChat('conversation')}>{t.chat.reportConversation}</button>
+            {conversationMenuOpen && (
+              <div data-conversation-menu className="absolute end-0 top-full z-30 mt-1 grid min-w-56 gap-1 rounded-xl border bg-popover p-1.5 text-popover-foreground shadow-xl">
+                <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setConversationMenuOpen(false); void toggleMute() }}>
+                  {isMuted ? <Bell className="size-4" /> : <BellOff className="size-4" />}{isMuted ? t.chat.unmuteConversation : t.chat.muteConversation}
+                </button>
+                {!isGroup && otherUserId && (
+                  <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => { setConversationMenuOpen(false); void toggleBlock() }}>
+                    {isBlockedByMe ? <ShieldCheck className="size-4" /> : <Ban className="size-4" />}{isBlockedByMe ? t.chat.unblockPerson : t.chat.blockPerson}
+                  </button>
+                )}
+                {!isGroup && otherUserId && <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => void reportChat('person')}><Flag className="size-4" />{t.chat.reportPerson}</button>}
+                <button type="button" className="flex items-center gap-2 rounded-lg px-3 py-2 text-start text-sm hover:bg-muted" onClick={() => void reportChat('conversation')}><Flag className="size-4" />{t.chat.reportConversation}</button>
+                {(!isGroup || isGroupAdmin) && (
+                  <label className="grid gap-1 border-t px-3 pb-1 pt-2 text-xs text-muted-foreground">
+                    <span className="flex items-center gap-2"><Clock className="size-3.5" />{t.chat.disappearingMessages}</span>
+                    <select
+                      value={data?.conversation?.expiresInSeconds == null ? '' : String(data.conversation.expiresInSeconds)}
+                      disabled={savingExpiry || !data?.conversation}
+                      onChange={(event) => void setExpiryDuration(event.target.value)}
+                      aria-label={t.chat.disappearingMessages}
+                      className="h-9 w-full rounded-lg border bg-background px-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/30 disabled:opacity-60"
+                    >
+                      <option value="">{t.chat.expiryOff}</option>
+                      <option value="86400">{t.chat.expiryOneDay}</option>
+                      <option value="604800">{t.chat.expiryOneWeek}</option>
+                      <option value="7776000">{t.chat.expiryNinetyDays}</option>
+                    </select>
+                  </label>
+                )}
               </div>
             )}
           </div>
@@ -1605,26 +1622,6 @@ export function ConversationView({
                       </ul>
                     </div>
                   )}
-                </section>
-              )}
-
-              {(!isGroup || isGroupAdmin) && (
-                <section className="border-b px-4 py-4">
-                  <h3 className="text-sm font-semibold">{t.chat.disappearingMessages}</h3>
-                  <p className="mt-1 text-xs text-muted-foreground">{t.chat.disappearingMessagesHint}</p>
-                  <select
-                    value={data?.conversation?.expiresInSeconds == null ? '' : String(data.conversation.expiresInSeconds)}
-                    disabled={savingExpiry || !data?.conversation}
-                    onChange={(event) => void setExpiryDuration(event.target.value)}
-                    aria-label={t.chat.disappearingMessages}
-                    className="mt-3 h-10 w-full max-w-sm rounded-xl border bg-background px-3 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/30 disabled:opacity-60"
-                  >
-                    <option value="">{t.chat.expiryOff}</option>
-                    <option value="86400">{t.chat.expiryOneDay}</option>
-                    <option value="604800">{t.chat.expiryOneWeek}</option>
-                    <option value="7776000">{t.chat.expiryNinetyDays}</option>
-                  </select>
-                  {savingExpiry && <span className="ms-2 text-xs text-muted-foreground">…</span>}
                 </section>
               )}
 

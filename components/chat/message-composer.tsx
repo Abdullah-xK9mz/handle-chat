@@ -466,9 +466,6 @@ export function MessageComposer({
             </div>
           )}
         </div>
-        <Button type="button" variant={recording ? 'destructive' : 'outline'} size="icon-lg" disabled={pending} className="size-10 shrink-0 rounded-full" aria-label={recording ? t.chat.stopRecording : t.chat.recordVoice} title={recording ? t.chat.stopRecording : t.chat.recordVoice} onClick={() => void toggleRecording()}>
-          {recording ? <StopCircle /> : <Mic />}
-        </Button>
         <label htmlFor="message" className="sr-only">{t.chat.messageLabel}</label>
         <textarea
           id="message"
@@ -488,9 +485,19 @@ export function MessageComposer({
           className="max-h-40 min-h-10 flex-1 resize-none rounded-2xl border border-input bg-muted px-4 py-2.5 text-sm leading-5 outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/40"
         />
         <Button type="button" variant={scheduleOpen ? 'default' : 'outline'} size="icon-lg" disabled={!value.trim() || Boolean(file) || pending} className="size-10 shrink-0 rounded-full" aria-label={locale === 'ar' ? 'جدولة الرسالة' : 'Schedule message'} title={locale === 'ar' ? 'جدولة الرسالة' : 'Schedule message'} onClick={() => setScheduleOpen((open) => !open)}><Clock /></Button>
-        <Button type="submit" size="icon-lg" disabled={!canSend} className="size-10 shrink-0 rounded-full" aria-label={t.chat.send}>
-          <SendHorizontal className="rtl:rotate-180" />
-        </Button>
+        {recording ? (
+          <Button type="button" variant="destructive" size="icon-lg" className="size-10 shrink-0 rounded-full animate-pulse" aria-label={t.chat.stopRecording} title={t.chat.stopRecording} onClick={() => void toggleRecording()}>
+            <StopCircle />
+          </Button>
+        ) : canSend ? (
+          <Button type="submit" size="icon-lg" className="size-10 shrink-0 rounded-full" aria-label={t.chat.send} title={t.chat.send}>
+            <SendHorizontal className="rtl:rotate-180" />
+          </Button>
+        ) : (
+          <Button type="button" variant="outline" size="icon-lg" disabled={pending} className="size-10 shrink-0 rounded-full" aria-label={t.chat.recordVoice} title={t.chat.recordVoice} onClick={() => void toggleRecording()}>
+            <Mic />
+          </Button>
+        )}
       </form>
 
       {imageEditOpen && imageEditFile && (
