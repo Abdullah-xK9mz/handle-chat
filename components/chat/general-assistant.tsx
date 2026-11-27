@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { ArrowLeft, Copy, Download, Forward, ImagePlus, Info, LoaderCircle, MessageCircle, Mic, PanelLeft, Pencil, Pin, Plus, RefreshCw, Reply, Send, Sparkles, Star, Trash2, X } from 'lucide-react'
 import { useI18n } from '@/components/i18n-provider'
 import { Button } from '@/components/ui/button'
@@ -63,6 +63,7 @@ const MAX_ANSWER_LENGTH = 50_000
 const MAX_HORDE_HISTORY_CHARACTERS = 24_000
 const MAX_HORDE_OUTPUT_TOKENS = 16_384
 const HORDE_VISION_MODELS = ['Qwen/Qwen3.8-Flash-Next']
+const IMAGE_ONLY_DB_MARKER = '\u2063'
 const HISTORY_IMPORT_BATCH_SIZE = 25
 const HISTORY_IMPORT_BATCH_CHARACTERS = 250_000
 const AI_CONTACT_NAME_PREFIX = 'message.ai-contact-name.v1'
@@ -316,6 +317,174 @@ async function prepareImageAttachment(file: File): Promise<AiImageAttachment> {
   }
 }
 
+function ImageEditorDialog({
+  attachment,
+  labels,
+  onCancel,
+  onSave,
+}: {
+  attachment: AiImageAttachment
+  labels: { title: string; crop: string; draw: string; text: string; textPlaceholder: string; textHint: string; cropHint: string; applyCrop: string; save: string; cancel: string }
+  onCancel: () => void
+  onSave: (attachment: AiImageAttachment) => void
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const interactionRef = useRef<{ mode: 'crop' | 'draw'; x: number; y: number } | null>(null)
+  const [mode, setMode] = useState<'crop' | 'draw' | 'text'>('crop')
+  const [selection, setSelection] = useState<{ x: number; y: number; width: number; height: number } | null>(null)
+  const [text, setText] = useState('')
+  const [color, setColor] = useState('#ff3b30')
+  const [canvasReady, setCanvasReady] = useState(false)
+
+  useEffect(() => {
+    const image = new Image()
+    image.onload = () => {
+      const canvas = canvasRef.current
+      const context = canvas?.getContext('2d')
+      if (!canvas || !context) return
+      canvas.width = image.naturalWidth
+      canvas.height = image.naturalHeight
+      context.drawImage(image, 0, 0)
+      setCanvasReady(true)
+    }
+    image.src = attachment.dataUrl
+  }, [attachment.dataUrl])
+
+  function pointOnCanvas(event: ReactPointerEvent<HTMLCanvasElement>) {
+    const canvas = event.currentTarget
+    const bounds = canvas.getBoundingClientRect()
+    return {
+      x: Math.max(0, Math.min(canvas.width, (event.clientX - bounds.left) * canvas.width / bounds.width)),
+      y: Math.max(0, Math.min(canvas.height, (event.clientY - bounds.top) * canvas.height / bounds.height)),
+    }
+  }
+
+  function handlePointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
+    const canvas = event.currentTarget
+    const context = canvas.getContext('2d')
+    if (!context) return
+    const point = pointOnCanvas(event)
+    canvas.setPointerCapture(event.pointerId)
+    if (mode === 'crop') {
+      interactionRef.current = { mode, ...point }
+      setSelection({ ...point, width: 0, height: 0 })
+      return
+    }
+    if (mode === 'draw') {
+      interactionRef.current = { mode, ...point }
+      context.beginPath()
+      context.moveTo(point.x, point.y)
+      context.lineCap = 'round'
+      context.lineJoin = 'round'
+      context.lineWidth = Math.max(4, canvas.width / 180)
+      context.strokeStyle = color
+      return
+    }
+    const value = text.trim()
+    if (!value) return
+    const isArabic = /[\u0600-\u06ff]/.test(value)
+    context.save()
+    context.font = `600 ${Math.max(22, canvas.width / 28)}px sans-serif`
+    context.fillStyle = color
+    context.shadowColor = 'rgba(0,0,0,.8)'
+    context.shadowBlur = Math.max(3, canvas.width / 240)
+    context.textAlign = isArabic ? 'right' : 'left'
+    context.direction = isArabic ? 'rtl' : 'ltr'
+    context.fillText(value, point.x, point.y, canvas.width * 0.8)
+    context.restore()
+  }
+
+  function handlePointerMove(event: ReactPointerEvent<HTMLCanvasElement>) {
+    const interaction = interactionRef.current
+    if (!interaction) return
+    const point = pointOnCanvas(event)
+    if (interaction.mode === 'crop') {
+      setSelection({ x: Math.min(interaction.x, point.x), y: Math.min(interaction.y, point.y), width: Math.abs(point.x - interaction.x), height: Math.abs(point.y - interaction.y) })
+      return
+    }
+    const context = event.currentTarget.getContext('2d')
+    if (!context) return
+    context.lineTo(point.x, point.y)
+    context.stroke()
+  }
+
+  function finishPointer() {
+    interactionRef.current = null
+  }
+
+  function applyCrop() {
+    const canvas = canvasRef.current
+    if (!canvas || !selection || selection.width < 12 || selection.height < 12) return
+    const left = Math.max(0, Math.min(canvas.width - 1, Math.round(selection.x)))
+    const top = Math.max(0, Math.min(canvas.height - 1, Math.round(selection.y)))
+    const right = Math.max(left + 1, Math.min(canvas.width, Math.round(selection.x + selection.width)))
+    const bottom = Math.max(top + 1, Math.min(canvas.height, Math.round(selection.y + selection.height)))
+    const width = right - left
+    const height = bottom - top
+    const cropped = document.createElement('canvas')
+    cropped.width = width
+    cropped.height = height
+    const croppedContext = cropped.getContext('2d')
+    if (!croppedContext) return
+    croppedContext.drawImage(canvas, left, top, width, height, 0, 0, width, height)
+    canvas.width = width
+    canvas.height = height
+    canvas.getContext('2d')?.drawImage(cropped, 0, 0)
+    setSelection(null)
+  }
+
+  function saveImage() {
+    const canvas = canvasRef.current
+    if (!canvas || !canvasReady) return
+    onSave({ ...attachment, dataUrl: canvas.toDataURL('image/jpeg', 0.9) })
+  }
+
+  const canvas = canvasRef.current
+  const selectionStyle = selection && canvas ? {
+    left: `${selection.x / canvas.width * 100}%`,
+    top: `${selection.y / canvas.height * 100}%`,
+    width: `${selection.width / canvas.width * 100}%`,
+    height: `${selection.height / canvas.height * 100}%`,
+  } : undefined
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 p-3 md:p-6" role="dialog" aria-modal="true" aria-labelledby="ai-image-editor-title" onClick={onCancel}>
+      <section className="flex max-h-[94dvh] w-full max-w-4xl flex-col gap-3 overflow-hidden rounded-2xl border bg-background p-3 shadow-2xl md:p-5" onClick={(event) => event.stopPropagation()}>
+        <header className="flex items-center justify-between gap-3">
+          <h2 id="ai-image-editor-title" className="font-semibold">{labels.title}</h2>
+          <button type="button" onClick={onCancel} className="rounded-full p-2 hover:bg-muted" aria-label={labels.cancel}><X className="size-5" /></button>
+        </header>
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" onClick={() => { setMode('crop'); setSelection(null) }} className={cn('rounded-lg border px-3 py-2 text-sm', mode === 'crop' && 'border-primary bg-primary/10 text-primary')}>{labels.crop}</button>
+          <button type="button" onClick={() => { setMode('draw'); setSelection(null) }} className={cn('rounded-lg border px-3 py-2 text-sm', mode === 'draw' && 'border-primary bg-primary/10 text-primary')}>{labels.draw}</button>
+          <button type="button" onClick={() => { setMode('text'); setSelection(null) }} className={cn('rounded-lg border px-3 py-2 text-sm', mode === 'text' && 'border-primary bg-primary/10 text-primary')}>{labels.text}</button>
+          <input type="color" value={color} onChange={(event) => setColor(event.target.value)} className="size-9 cursor-pointer rounded-md border bg-background p-1" aria-label={labels.draw} />
+          {mode === 'text' && <input value={text} onChange={(event) => setText(event.target.value)} placeholder={labels.textPlaceholder} className="min-w-40 flex-1 rounded-lg border bg-background px-3 py-2 text-sm" />}
+          {mode === 'crop' && selection && selection.width >= 12 && selection.height >= 12 && <button type="button" onClick={applyCrop} className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">{labels.applyCrop}</button>}
+        </div>
+        <p className="text-xs text-muted-foreground">{mode === 'crop' ? labels.cropHint : mode === 'draw' ? labels.draw : labels.textHint}</p>
+        <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto rounded-xl bg-black/90 p-2">
+          <div className="relative mx-auto w-fit max-w-full leading-none">
+            <canvas
+              ref={canvasRef}
+              className={cn('block max-h-[58dvh] max-w-full touch-none object-contain', mode === 'crop' ? 'cursor-crosshair' : mode === 'draw' ? 'cursor-crosshair' : 'cursor-text')}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={finishPointer}
+              onPointerCancel={finishPointer}
+            />
+            {selectionStyle && <div aria-hidden="true" className="pointer-events-none absolute border-2 border-white bg-white/10" style={selectionStyle} />}
+          </div>
+        </div>
+        <footer className="flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted">{labels.cancel}</button>
+          <button type="button" onClick={saveImage} disabled={!canvasReady} className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50">{labels.save}</button>
+        </footer>
+      </section>
+    </div>
+  )
+}
+
 function delayWithSignal(milliseconds: number, signal: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
     if (signal.aborted) {
@@ -474,7 +643,7 @@ function readLocalHistory(key: string): AiMessage[] {
       (typeof item.id === 'string' || typeof item.id === 'number') &&
       (item.role === 'user' || item.role === 'assistant') &&
       typeof item.body === 'string' &&
-      (item.body.length > 0 || item.deleted_at != null) &&
+      (item.body.length > 0 || item.deleted_at != null || typeof item.imageData === 'string' || typeof item.imageUrl === 'string') &&
       item.pending !== true,
     )
   } catch {
@@ -484,7 +653,7 @@ function readLocalHistory(key: string): AiMessage[] {
 
 function writeLocalHistory(key: string, messages: AiMessage[]) {
   const stableMessages = messages
-    .filter((message) => !message.pending && (message.body.length > 0 || message.deleted_at != null))
+    .filter((message) => !message.pending && (message.body.length > 0 || message.deleted_at != null || message.imageData || message.imageUrl))
     .map(({ pending: _pending, ...message }) => message)
   try {
     const serialized = JSON.stringify(stableMessages)
@@ -502,6 +671,7 @@ function mergeHistory(serverMessages: AiMessage[], localMessages: AiMessage[]) {
     const local = message.client_id ? localByClientId.get(message.client_id) : undefined
     return local ? {
       ...message,
+      ...(local.imageData !== undefined ? { body: local.body } : {}),
       ...(local.codeIncomplete !== undefined ? { codeIncomplete: local.codeIncomplete } : {}),
       ...(local.continuesCodeFrom !== undefined ? { continuesCodeFrom: local.continuesCodeFrom } : {}),
       ...(local.imageData !== undefined ? { imageData: local.imageData } : {}),
@@ -726,6 +896,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
   const [aiStatusIndex, setAiStatusIndex] = useState(0)
   const [aiResponseStarted, setAiResponseStarted] = useState(false)
   const [attachedImage, setAttachedImage] = useState<AiImageAttachment | null>(null)
+  const [imageEditorOpen, setImageEditorOpen] = useState(false)
   const [speechSupported, setSpeechSupported] = useState(false)
   const [recordingSpeech, setRecordingSpeech] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -960,7 +1131,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
     const savedByClientId = new Map(saved.flatMap((message) => message.client_id ? [[message.client_id, message] as const] : []))
     setMessages((current) => current.map((message) => {
       const persisted = message.client_id ? savedByClientId.get(message.client_id) : undefined
-      return persisted ? { ...message, ...persisted } : message
+      return persisted ? { ...message, ...persisted, ...(message.imageData ? { body: message.body } : {}) } : message
     }))
   }
 
@@ -1071,6 +1242,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
     setActiveChatId(chat.id)
     setMessages([])
     setAttachedImage(null)
+    setImageEditorOpen(false)
     setHistoryLoading(false)
     setHasMoreHistory(false)
     setHistoryError(false)
@@ -1089,6 +1261,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
     if (!window.matchMedia('(min-width: 768px)').matches) setSavedChatsOpen(false)
     setDraft('')
     setAttachedImage(null)
+    setImageEditorOpen(false)
     setActionNotice('')
     setSaveError(false)
   }
@@ -1247,7 +1420,8 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
   ) {
     if ((!question && !imageData) || historyLoading || busy || question.length > MAX_QUESTION_LENGTH) return
 
-    const savedQuestion = question || t.chat.ai.imageQuestion
+    const savedQuestion = question
+    const promptQuestion = question || t.chat.ai.imageQuestion
 
     if (clearDraft) setDraft('')
     setHistoryError(false)
@@ -1286,7 +1460,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
     const nextMessages = retryExchange
       ? messages.map((message) => message.id === answerId ? pendingAnswer : message)
       : [...messages, userMessage, pendingAnswer]
-    updateChatMetadata(savedQuestion)
+    updateChatMetadata(promptQuestion)
 
     setMessages(nextMessages)
     writeLocalHistory(historyKey, nextMessages)
@@ -1318,7 +1492,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
             setMessages((current) => current.map((message) => message.id === answerId ? { ...message, body } : message))
           },
           controller.signal,
-          chooseHordeOutputTokens(savedQuestion, modelQuestion),
+          chooseHordeOutputTokens(promptQuestion, modelQuestion),
           imageData ? HORDE_VISION_MODELS : HORDE_MODELS,
         )
         answer = answerResult.text
@@ -1341,7 +1515,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
       setMessages((current) => current.map((message) => message.id === answerId ? assistantMessage : message))
       if (activeChat?.serverHistory) {
         try {
-          await saveExchangeToDatabase(exchangeUserId, answerId, savedQuestion, answer, selectedReply)
+          await saveExchangeToDatabase(exchangeUserId, answerId, savedQuestion || IMAGE_ONLY_DB_MARKER, answer, selectedReply)
         } catch {
           // Keep the received answer without showing the old save warning.
         }
@@ -1355,7 +1529,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
           body: t.chat.ai.retryNotice,
           pending: false,
           failed: true,
-          retryQuestion: question,
+          retryQuestion: question || t.chat.ai.imageQuestion,
           retryModelQuestion: modelQuestion,
           ...(continuationSource ? { retryContinuationSourceId: continuationSource.id } : {}),
         } : message))
@@ -1385,10 +1559,10 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
     if (!question && !imageData) return
     const selectedReply = replyTo
     const replyReference = selectedReply?.body ? `${t.chat.ai.replyContext}: ${selectedReply.body}\n\n` : ''
-    const imageQuestion = question || t.chat.ai.imageQuestion
     setAttachedImage(null)
+    setImageEditorOpen(false)
     setReplyTo(null)
-    await submitQuestion(imageQuestion, `${replyReference}${question || t.chat.ai.imageQuestion}`, selectedReply, undefined, true, undefined, imageData)
+    await submitQuestion(question, `${replyReference}${question || t.chat.ai.imageQuestion}`, selectedReply, undefined, true, undefined, imageData)
   }
 
   async function continueCode(message: AiMessage) {
@@ -1574,7 +1748,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
       <form onSubmit={(event) => void sendQuestion(event)} className="flex shrink-0 flex-col gap-2 border-t bg-background px-3 py-2.5 pb-[max(0.65rem,env(safe-area-inset-bottom))] md:px-5 md:pb-3">
         <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={(event) => void handleImageSelection(event)} />
         {replyTo && <div className="flex items-center gap-2 rounded-xl border-s-2 border-primary bg-muted/60 px-3 py-2 text-xs"><Reply className="size-4 shrink-0 text-primary" /><span className="min-w-0 flex-1 truncate text-muted-foreground">{t.chat.ai.replyContext}: {replyTo.deleted_at ? t.chat.deletedMessage : replyTo.body}</span><button type="button" onClick={() => setReplyTo(null)} className="rounded-full p-1 hover:bg-background" aria-label={t.chat.cancel}><X className="size-4" /></button></div>}
-        {attachedImage && <div className="flex items-center gap-2 self-start rounded-xl border bg-muted/50 p-2"><img src={attachedImage.dataUrl} alt={t.chat.ai.attachedImage} className="size-14 rounded-lg object-cover" /><span className="max-w-48 truncate text-xs text-muted-foreground">{attachedImage.name}</span><button type="button" className="rounded-full p-1 hover:bg-background" onClick={() => setAttachedImage(null)} aria-label={t.chat.cancel}><X className="size-4" /></button></div>}
+        {attachedImage && <div className="flex items-center gap-2 self-start rounded-xl border bg-muted/50 p-2"><img src={attachedImage.dataUrl} alt={t.chat.ai.attachedImage} className="size-14 rounded-lg object-cover" /><button type="button" onClick={() => setImageEditorOpen(true)} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium hover:bg-background" title={t.chat.ai.editImage}><Pencil className="size-3.5" />{t.chat.ai.editImage}</button><button type="button" className="rounded-full p-1 hover:bg-background" onClick={() => { setAttachedImage(null); setImageEditorOpen(false) }} aria-label={t.chat.cancel}><X className="size-4" /></button></div>}
         <div className="flex items-end gap-2">
           {speechSupported && (
             <Button type="button" variant={recordingSpeech ? 'destructive' : 'secondary'} size="icon" className={cn('size-11 shrink-0 rounded-full', recordingSpeech && 'animate-pulse ring-2 ring-red-400/40')} onClick={toggleSpeechInput} disabled={historyLoading || busy} aria-label={recordingSpeech ? t.chat.ai.stopVoiceInput : t.chat.ai.voiceInput} aria-pressed={recordingSpeech} title={recordingSpeech ? t.chat.ai.stopVoiceInput : t.chat.ai.voiceInput}>
@@ -1601,13 +1775,33 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
             </Button>
           ) : (
             <Button type="submit" size="icon" className="size-11 shrink-0 rounded-full" disabled={historyLoading || (!draft.trim() && !attachedImage)} aria-label={t.chat.ai.send} title={t.chat.ai.send}>
-              <Send className="size-4 -rotate-45" />
+              <Send className="size-4" />
             </Button>
           )}
         </div>
       </form>
         </div>
       </div>
+
+      {imageEditorOpen && attachedImage && (
+        <ImageEditorDialog
+          attachment={attachedImage}
+          labels={{
+            title: t.chat.ai.imageEditorTitle,
+            crop: t.chat.ai.imageCrop,
+            draw: t.chat.ai.imageDraw,
+            text: t.chat.ai.imageText,
+            textPlaceholder: t.chat.ai.imageTextPlaceholder,
+            textHint: t.chat.ai.imageTextHint,
+            cropHint: t.chat.ai.imageCropHint,
+            applyCrop: t.chat.ai.imageApplyCrop,
+            save: t.chat.ai.imageSave,
+            cancel: t.chat.cancel,
+          }}
+          onCancel={() => setImageEditorOpen(false)}
+          onSave={(editedImage) => { setAttachedImage(editedImage); setImageEditorOpen(false) }}
+        />
+      )}
 
       {forwarding && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="ai-forward-title" onClick={() => { if (!forwardingBusy) setForwarding(null) }}>
