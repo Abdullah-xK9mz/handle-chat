@@ -9,6 +9,7 @@ import { edgeRequest } from '@/lib/supabase'
 import { readStoredValue, removeStoredValue, writeStoredValue } from '@/lib/safe-storage'
 import { AI_SPEECH_VOICE_KEY } from '@/lib/chat-preferences'
 import type { ConversationSummary } from './types'
+import { renderBold } from '@/lib/render-bold'
 
 type AiMessage = {
   id: number | string
@@ -845,7 +846,7 @@ function AiMessageBody({
   return (
     <div className="flex min-w-0 flex-col gap-2">
       {segments.map((segment, segmentIndex) => {
-        if (segment.type === 'text') return segment.text ? <p key={`text-${segmentIndex}`} className="whitespace-pre-wrap">{segment.text}</p> : null
+        if (segment.type === 'text') return segment.text ? <p key={`text-${segmentIndex}`} className="whitespace-pre-wrap">{renderBold(segment.text)}</p> : null
         const key = `${String(message.id)}:${segmentIndex}`
         const code = completeCodeForCopy(messages, messageIndex, segment)
         return (
@@ -1121,7 +1122,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
   const [hasMoreHistory, setHasMoreHistory] = useState(false)
   const [olderHistoryLoading, setOlderHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState(false)
-  const [saveError, setSaveError] = useState(false)
+  const [, setSaveError] = useState(false)
   const [busy, setBusy] = useState(false)
   const [replyTo, setReplyTo] = useState<AiMessage | null>(null)
   const [activeMessageId, setActiveMessageId] = useState<number | string | null>(null)
@@ -2047,7 +2048,7 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
                           onDownloadCode={(language, code) => downloadCodeFile(language, code)}
                           onContinue={(incompleteMessage) => void continueCode(incompleteMessage)}
                         />
-                      : message.body ? <p className="whitespace-pre-wrap">{message.body}</p> : null}
+                      : message.body ? <p className="whitespace-pre-wrap">{renderBold(message.body)}</p> : null}
                   {message.pending && !aiResponseStarted && (
                     <div role="status" className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
                       <span aria-hidden="true" className="size-1.5 animate-pulse rounded-full bg-primary" />
@@ -2085,7 +2086,6 @@ export function GeneralAssistant({ onBack, userId, availableConversations }: { o
               </div>
             ))}
             {historyError && <p role="status" className="text-center text-xs text-destructive">{t.chat.ai.loadError}</p>}
-            {saveError && <p role="status" className="text-center text-xs text-destructive">{t.chat.ai.saveError}</p>}
             {actionNotice && <p role="status" className="text-center text-xs text-muted-foreground">{actionNotice}</p>}
           </div>
         )}

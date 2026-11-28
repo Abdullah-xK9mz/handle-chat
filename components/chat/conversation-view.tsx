@@ -53,6 +53,7 @@ import {
   type GroupSettings,
 } from './types'
 import { UserAvatar } from './user-avatar'
+import { renderBold } from '@/lib/render-bold'
 
 const DEFAULT_GROUP_SETTINGS: GroupSettings = {
   addMembers: 'admins',
@@ -76,7 +77,7 @@ function renderMessageText(text: string): ReactNode[] {
     const visibleUrl = raw.slice(0, raw.length - trailing.length)
     if (!visibleUrl) continue
 
-    if (start > cursor) parts.push(text.slice(cursor, start))
+    if (start > cursor) parts.push(...renderBold(text.slice(cursor, start)))
     const candidate = visibleUrl.startsWith('www.') ? `https://${visibleUrl}` : visibleUrl
     let href: string | null = null
     try {
@@ -106,7 +107,7 @@ function renderMessageText(text: string): ReactNode[] {
     }
   }
 
-  if (cursor < text.length) parts.push(text.slice(cursor))
+  if (cursor < text.length) parts.push(...renderBold(text.slice(cursor)))
   return parts
 }
 
